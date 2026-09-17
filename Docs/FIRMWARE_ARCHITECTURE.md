@@ -100,10 +100,12 @@ direct jump into ROM while PD/I2C/DMA/application state is still active.
 
 ## Implemented baseline (moved from the root README)
 
-- USB-PD Sink policy: SPR negotiation plus USB-PD 3.1 EPR entry; the request
-  path is adaptive (Get_Source_Cap_Extended -> Source-PDP-based EPR Enter ->
-  highest-voltage EPR Fixed PDO, non-standard voltages up to 32 V / currents up
-  to the 7 A policy ceiling; nominal contract 28 V / 5 A);
+- USB-PD Sink policy: SPR negotiation (21 V PPS preferred when the source
+  advertises a PPS APDO operating above 20 V; 8 s refresh; falls back to the
+  highest <=20 V Fixed PDO on Reject/WAIT) plus USB-PD 3.1 EPR entry; the
+  request path is adaptive (Get_Source_Cap_Extended -> Source-PDP-based EPR
+  Enter -> highest-voltage EPR Fixed PDO, non-standard voltages up to 32 V /
+  currents up to the 7 A policy ceiling; nominal contract 28 V / 5 A);
 - nine stackless coroutines (`APP/app_tasks.c`); the SPI display and every
   hardware-I2C transaction are interrupt driven (DMA1 CH3 page chain, I2C1
   EV/ER + DMA, GX21M15U shares the I2C1 bus with the SW3538);

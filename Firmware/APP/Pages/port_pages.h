@@ -16,6 +16,12 @@ extern "C" {
  * Requests are forwarded to app_tasks.c, which debounces and writes them. */
 void Add_Port_Items(ui_page_t *parent_page);
 
+/* Re-enable every switch on all three protocol pages (RAM state only).
+ * app_tasks.c pairs this with the "every family enabled" masks pushed to the
+ * controllers - at boot and again whenever a controller reconnects - so page
+ * state and chip state always share the same all-enabled baseline. */
+void PortPages_EnableAllProtocols(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -19,6 +19,7 @@
 #include "sh1107_display.h"
 #include "buttons.h"
 #include "ui_conf.h"
+#include "Pages/port_pages.h"
 #include "core/ui.h"
 #include "display/dispDriver.h"
 #include "time_api.h"
@@ -309,17 +310,19 @@ THRD_DECLARE(thread_i2c_watchdog)
 /* ---- Output power allocation ------------------------------------------------
  *
  * The dashboard supplies the total budget (PWR_Limit_GetW(): UVP 0 W, PD 95%
- * of the contract power, DC user value).  Chips are provisioned in plug-in
- * order, because only the first attachment can be served with certainty:
- *   - the first chip with a device attached reserves min(its cap, budget);
- *   - every other chip (attached later or not yet) gets min(its cap, what is
- *     left), so a later load still finds the best available ceiling;
- *   - unplugging releases the reservation automatically - the plan is rebuilt
- *     from scratch on every power-mirror pass.
+ * of the contract power, DC user value).  The split is rebuilt on every
+ * power-mirror pass from the chips' measured output power (ADC mirror, 0 W
+ * while nothing is attached):
+ *   - each chip is provisioned with (budget - the other chips' measured
+ *     power), capped by its controller ceiling - it keeps what it draws and
+ *     additionally sees the still-free part of the budget;
+ *   - a detached port measures 0 W, so its share is the free headroom left
+ *     for the next attachment, and unplugging returns the share at once;
+ *   - oversubscription and measurement ripple are accepted by design.
  * Shares are clamped into the range each SetPowerLimitW() accepts
  * (SW3538 18..140 W, SW3526 12..71 W) and written only when they change. */
 /* The allocation rules above live in Services/power_alloc.c/.h: PWR_Alloc_Plan()
- * rebuilds the budget split from the attach flags computed below, and the
+ * rebuilds the budget split from the measured power computed below, and the
  * PWR_Alloc_ApplyNeeded/Done() pair deduplicates the chip writes performed by
  * thread_power_mirror below. */
 
@@ -348,16 +351,31 @@ static uint8_t app_power_attached(uint8_t chip)
     return app_sw3526_attached(&s_sw3526_2);
 }
 
-/* ---- Port fast-charge protocol masks requested by the UI -----------------
+/* Output power in whole watts from the ADC mirror.  The current values are in
+ * 0.1 mA units, so W = mV * I(0.1 mA) / 10^7. */
+static uint8_t app_power_w(uint16_t vout_mv, uint32_t iout_ma_x10)
+{
+    uint32_t w = ((uint32_t)vout_mv * iout_ma_x10) / 10000000u;
+
+    return (uint8_t)((w > 255u) ? 255u : w);
+}
+
+/* ---- Port fast-charge protocol masks (UI requests + boot defaults) --------
  * The MiaoUI protocol pages own the desired mask; this layer only forwards
  * the latest request to the chip once the switching activity settles, since
- * a mask write makes an attached sink renegotiate.  The write runs inside
- * thread_power_mirror so every transfer on a handle stays in one thread. */
+ * a mask write makes an attached sink renegotiate.  APP_Tasks_Init() pushes
+ * an "every family enabled" mask through the same path at boot, and the
+ * power-mirror pass repeats it whenever a controller returns from offline
+ * (see app_proto_reinit_on_edge()), so vendor OTP differences cannot leave
+ * protocol functions disabled.  The write runs inside thread_power_mirror so
+ * every transfer on a handle stays in one thread. */
 #define PORT_PROTO_DEBOUNCE_MS   800u
 
 static uint32_t s_proto_req_ms[3];
 static uint16_t s_proto_req_mask[3];
 static uint8_t  s_proto_req_pending[3];
+static uint8_t  s_sw3538_paths_pending = 1u;   /* push PT1/PT2 fast charge once per online edge */
+static uint8_t  s_chip_online_prev[3];         /* last pass online state, for the reconnect re-init */
 
 void APP_PortProtocol_Touch(uint8_t port, uint16_t mask)
 {
@@ -369,11 +387,52 @@ void APP_PortProtocol_Touch(uint8_t port, uint16_t mask)
     s_proto_req_pending[port] = 1u;
 }
 
+/* Re-apply the boot protocol defaults on every controller offline -> online
+ * edge.  A controller that reset falls back to its vendor OTP state, so its
+ * all-enabled mask (and, for the SW3538, both fast-charge paths) is pushed
+ * again - once per reconnection, through the same debounced writer.  The
+ * protocol pages return to the all-enabled baseline as well (single-byte
+ * writes, picked up by the next UI frame).  Called once per power-mirror
+ * pass, after the status refresh. */
+static void app_proto_reinit_on_edge(void)
+{
+    uint8_t online;
+
+    online = (SW3538_IsOnline(&s_sw3538) != 0u) ? 1u : 0u;
+    if((online != 0u) && (s_chip_online_prev[0] == 0u))
+    {
+        s_sw3538_paths_pending = 1u;
+        APP_PortProtocol_Touch(APP_PORT_PROTO_SW3538,
+                               (uint16_t)SW3538_PROTOCOL_ENABLE_ALL);
+        PortPages_EnableAllProtocols();
+    }
+    s_chip_online_prev[0] = online;
+
+    online = (SW3526_IsOnline(&s_sw3526_1) != 0u) ? 1u : 0u;
+    if((online != 0u) && (s_chip_online_prev[1] == 0u))
+    {
+        APP_PortProtocol_Touch(APP_PORT_PROTO_SW3526_1,
+                               (uint16_t)SW3526_PROTOCOL_ENABLE_ALL);
+        PortPages_EnableAllProtocols();
+    }
+    s_chip_online_prev[1] = online;
+
+    online = (SW3526_IsOnline(&s_sw3526_2) != 0u) ? 1u : 0u;
+    if((online != 0u) && (s_chip_online_prev[2] == 0u))
+    {
+        APP_PortProtocol_Touch(APP_PORT_PROTO_SW3526_2,
+                               (uint16_t)SW3526_PROTOCOL_ENABLE_ALL);
+        PortPages_EnableAllProtocols();
+    }
+    s_chip_online_prev[2] = online;
+}
+
 /* One merged mirror thread: SW3538 (hardware I2C1) and both SW3526s (soft
  * I2C) are refreshed back-to-back, then the power budget is re-allocated. */
 THRD_DECLARE(thread_power_mirror)
 {
     static uint8_t share[PWR_ALLOC_CHIPS];
+    static uint8_t meas_w[PWR_ALLOC_CHIPS];  /* measured output power: 3538 / C1 / C2 */
     static uint8_t w0;
     static uint8_t w1;
     static uint8_t w2;
@@ -397,9 +456,25 @@ THRD_DECLARE(thread_power_mirror)
             if(SW3526_IsOnline(&s_sw3526_2))
                 THRD_SPAWN_ARGS(SW3526_ADCLoad, &s_sw3526_2);
 
-            /* Budget -> per-chip power limits (Services/power_alloc.c). */
-            PWR_Alloc_Plan(app_power_attached(0u), app_power_attached(1u),
-                           app_power_attached(2u), share);
+            /* Controllers that just came back from offline get the protocol
+             * defaults re-applied (see app_proto_reinit_on_edge()). */
+            app_proto_reinit_on_edge();
+
+            /* Measured output power per chip feeds the allocation; a port
+             * without a device contributes 0 W. */
+            meas_w[0] = app_power_attached(0u) ?
+                        app_power_w(SW3538_GetStatus(&s_sw3538)->vout_mv,
+                                    SW3538_GetStatus(&s_sw3538)->pt1_iout_ma_x10 +
+                                    SW3538_GetStatus(&s_sw3538)->pt2_iout_ma_x10) : 0u;
+            meas_w[1] = app_power_attached(1u) ?
+                        app_power_w(SW3526_GetStatus(&s_sw3526_1)->vout_mv,
+                                    SW3526_GetStatus(&s_sw3526_1)->iout_ma_x10) : 0u;
+            meas_w[2] = app_power_attached(2u) ?
+                        app_power_w(SW3526_GetStatus(&s_sw3526_2)->vout_mv,
+                                    SW3526_GetStatus(&s_sw3526_2)->iout_ma_x10) : 0u;
+
+            /* Measured power -> per-chip power limits (Services/power_alloc.c). */
+            PWR_Alloc_Plan(meas_w, share);
             w0 = PWR_Alloc_ApiW(0u, share[0]);
             w1 = PWR_Alloc_ApiW(1u, share[1]);
             w2 = PWR_Alloc_ApiW(2u, share[2]);
@@ -468,6 +543,17 @@ THRD_DECLARE(thread_power_mirror)
                                 (SW3526_ProtocolMask)s_proto_req_mask[APP_PORT_PROTO_SW3526_2]);
                 printf("[CFG] SW3526 C2 protocol mask 0x%03X\r\n",
                        (unsigned)s_proto_req_mask[APP_PORT_PROTO_SW3526_2]);
+            }
+
+            /* Boot default, once: enable both SW3538 fast-charge paths (the
+             * UI has no switch for these bits and vendor OTP may ship them
+             * disabled). */
+            if((s_sw3538_paths_pending != 0u) && (SW3538_IsOnline(&s_sw3538) != 0u))
+            {
+                s_sw3538_paths_pending = 0u;
+                THRD_SPAWN_ARGS(SW3538_SetPortFastChargeEnabled, &s_sw3538, 1u, 1u);
+                THRD_SPAWN_ARGS(SW3538_SetPortFastChargeEnabled, &s_sw3538, 2u, 1u);
+                printf("[CFG] SW3538 fast-charge paths: PT1+PT2 enabled\r\n");
             }
         }
         THRD_DELAY(POWER_MIRROR_POLL_MS);
@@ -691,6 +777,19 @@ void APP_Tasks_Init(void)
     SoftI2C_Init(&s_sw3526_bus2);
     SW3526_HandleInit(&s_sw3526_2, &s_sw3526_bus2);
     printf("Soft-I2C: SW3526#1 PA4/PA3, SW3526#2 PA1/PA2; independent handles\r\n");
+
+    /* Startup protocol defaults: enable every protocol family on all three
+     * controllers so vendor OTP differences cannot leave functions disabled,
+     * and put the protocol pages on the same all-enabled baseline.  The same
+     * defaults are re-applied whenever a controller returns from offline
+     * (app_proto_reinit_on_edge() in thread_power_mirror): a reset chip falls
+     * back to its OTP state, so every reconnection gets one fresh push
+     * through the debounced writer.  That thread also enables both SW3538
+     * fast-charge paths on those edges (see s_sw3538_paths_pending). */
+    PortPages_EnableAllProtocols();
+    APP_PortProtocol_Touch(APP_PORT_PROTO_SW3538, (uint16_t)SW3538_PROTOCOL_ENABLE_ALL);
+    APP_PortProtocol_Touch(APP_PORT_PROTO_SW3526_1, (uint16_t)SW3526_PROTOCOL_ENABLE_ALL);
+    APP_PortProtocol_Touch(APP_PORT_PROTO_SW3526_2, (uint16_t)SW3526_PROTOCOL_ENABLE_ALL);
 
     printf("PD Sink: SPR <= %u mV; EPR nominal %u mV / %u mA; policy <= %u mA\r\n",
            (unsigned)PD_SPR_MAX_FIXED_MV,

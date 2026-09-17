@@ -17,7 +17,7 @@ BSP/                 板级启动 + 器件驱动
   Fan/               PB9 / TIM1_CH1 187.5 kHz PWM 风扇调速
   Buttons/           K1/K2 低有效按键消抖/输入状态机
   Display/           SH1107 传输层 + DMA 完成中断整帧刷屏
-Peripheral/PD/       USB-PD Sink / PD3.1 EPR 策略与 PHY 后端
+Peripheral/PD/       USB-PD Sink 策略(PPS 优先 / PD3.1 EPR)与 PHY 后端
 Peripheral/I2C/      PA13/PA14 I2C1 中断驱动事务引擎 + 看门狗恢复
 Peripheral/SoftI2C/  句柄式协作 GPIO-I2C 引擎(供 SW3526 使用)
 Peripheral/Time/     SysTick 自由运行µs计数器 + 1 ms 节拍中断

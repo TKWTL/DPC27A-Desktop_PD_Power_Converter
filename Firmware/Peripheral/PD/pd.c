@@ -34,6 +34,14 @@
 #define PD_EPR_ENTER_TIMEOUT_MS           550U
 #define PD_EPR_KEEPALIVE_PERIOD_MS        375U
 #define PD_EPR_KEEPALIVE_ACK_TIMEOUT_MS   100U
+
+/* SPR PPS compatibility policy. A Buck-only downstream benefits from a little
+ * input headroom when it must generate 20 V. Prefer a PPS APDO that can provide
+ * >20 V and request up to 21.00 V. Refresh before tPPSRequest expires. */
+#define PD_PPS_TARGET_MV                  21000U
+#define PD_PPS_REFRESH_PERIOD_MS           8000U
+#define PD_PPS_REFRESH_RETRY_MS            1000U
+#define PD_PPS_MAX_ENCODED_MA              6350U  /* 7-bit field, 50 mA/LSB */
 #define PD_SRC_CAP_EXT_TIMEOUT_MS          120U
 #define PD_EPR_ENTER_RETRY_DELAY_MS        120U
 #define PD_VBUS_POWERED_SUPPRESS_HARD_RESET 1U
@@ -74,6 +82,11 @@ static UINT8 PD_Send_Handle(const UINT8 *pbuf, UINT8 len);
 static void PD_Main_Proc(void);
 static void PD_EPR_Fallback(const char *reason);
 static void PD_PDO_Analyse(UINT8 pdo_idx, UINT8 *srccap, UINT16 *current, UINT16 *voltage);
+static UINT32 PD_ReadU32LE(const UINT8 *p);
+static void PD_WriteU32LE(UINT8 *p, UINT32 v);
+static UINT8 PD_Select_Preferred_PPS_APDO(void);
+static UINT8 PD_PPS_Request(UINT8 pdo_index, UINT16 target_mv, UINT16 request_ma, UINT8 refresh);
+static void PD_Fallback_From_PPS(const char *reason);
 
 
 
@@ -94,6 +107,12 @@ static __IO UINT16 PD_Selected_mA;
 static __IO UINT8 PD_SourcePDO_Count;
 static UINT8 PD_SourcePDO_Raw[28];
 static __IO UINT8 PD_GetSrcCap_Sent;
+
+/* SPR PPS state. FailedForAttach prevents repeated PPS retries after an adapter
+ * explicitly rejects PPS; it is cleared on real physical detach. */
+static __IO UINT8 PD_Selected_IsPPS;
+static __IO UINT8 PD_PPS_ContractActive;
+static __IO UINT8 PD_PPS_FailedForAttach;
 
 /* USB PD 3.1 EPR sink state.  The CH32X035 PHY can transport these
  * messages; the WCH USBPD_SNK example does not provide the EPR policy
@@ -123,7 +142,9 @@ static __IO UINT8  PD_EPR_FailedForAttach;
 static __IO UINT8  PD_EPR_GetCapSent;
 static __IO UINT8  PD_EPR_KeepAliveWaitAck;
 static UINT16 PD_EPR_TimerMs;
-static UINT16 PD_EPR_KeepAliveMs;
+/* Shared contract-maintenance clock:
+ * EPR active -> 375 ms EPR KeepAlive; SPR PPS -> 8 s PPS refresh. */
+static UINT16 PD_ContractMaintenanceMs;
 static UINT16 PD_EPR_KeepAliveAckMs;
 static UINT16 PD_EPR_CapDataSize;
 static UINT8  PD_EPR_LastChunk;
@@ -210,6 +231,8 @@ static void PD_PHY_Reset( void )
     PD_Selected_PDO = 0;
     PD_Selected_mV = 0;
     PD_Selected_mA = 0;
+    PD_Selected_IsPPS = 0u;
+    PD_PPS_ContractActive = 0u;
     PD_SourcePDO_Count = 0;
     PD_GetSrcCap_Sent = 0;
     s_pd_get_src_cap_retries = 0u;
@@ -227,7 +250,7 @@ static void PD_PHY_Reset( void )
     PD_EPR_GetCapSent = 0;
     PD_EPR_KeepAliveWaitAck = 0;
     PD_EPR_TimerMs = 0;
-    PD_EPR_KeepAliveMs = 0;
+    PD_ContractMaintenanceMs = 0;
     PD_EPR_KeepAliveAckMs = 0;
     PD_EPR_CapDataSize = 0;
     PD_EPR_LastChunk = 0;
@@ -258,6 +281,7 @@ void PD_Init( void )
 
     /* A real MCU boot is a new physical power session. */
     PD_EPR_FailedForAttach = 0u;
+    PD_PPS_FailedForAttach = 0u;
     PD_PHY_Reset();
 
     /* Dead-battery / bus-powered startup: the passive Rd is already visible
@@ -324,6 +348,7 @@ static void PD_Det_Proc( void )
                 /* This is a genuine physical detach, unlike a Source Hard
                  * Reset.  The next attachment is allowed one fresh EPR try. */
                 PD_EPR_FailedForAttach = 0u;
+                PD_PPS_FailedForAttach = 0u;
                 PD_PHY_Reset();
                 PD_Rx_Mode();
             }
@@ -523,6 +548,7 @@ void PDO_Request( UINT8 pdo_index )
     PD_Selected_PDO = pdo_index;
     PD_Selected_mV = Voltage;
     PD_Selected_mA = request_ma;
+    PD_Selected_IsPPS = 0u;
     PD_Ctl.ReqPDO_Idx = pdo_index;
 
     /* Do not print/flush between Source_Capabilities GoodCRC and Request.
@@ -674,6 +700,147 @@ static UINT8 PD_Select_Highest_Fixed_PDO(void)
     return best;
 }
 
+/* Select the best SPR PPS APDO for Buck-input headroom. Standard PPS APDO
+ * subtype 0 only. The operating voltage is min(APDO max, 21 V) and must be
+ * strictly above 20 V; tie-breaker is higher current. */
+static UINT8 PD_Select_Preferred_PPS_APDO(void)
+{
+    UINT8 i;
+    UINT8 best = 0u;
+    UINT16 best_mv = 0u;
+    UINT16 best_ma = 0u;
+
+    if(PD_PPS_FailedForAttach)
+        return 0u;
+
+    for(i = 1u; i <= PD_SourcePDO_Count; ++i)
+    {
+        UINT32 raw = PD_ReadU32LE(&PD_SourcePDO_Raw[(i - 1u) << 2]);
+        UINT8 supply_type = (UINT8)(raw >> 30);
+        UINT8 apdo_type;
+        UINT16 min_mv;
+        UINT16 max_mv;
+        UINT16 target_mv;
+        UINT16 ma;
+
+        if(supply_type != 3u)
+            continue;
+
+        apdo_type = (UINT8)((raw >> 28) & 0x03u);
+        if(apdo_type != 0u)
+            continue;                       /* PPS only, never AVS in SPR */
+
+        min_mv = (UINT16)(((raw >> 8) & 0xFFu) * 100u);
+        max_mv = (UINT16)(((raw >> 17) & 0xFFu) * 100u);
+        ma = (UINT16)((raw & 0x7Fu) * 50u);
+        target_mv = (max_mv > PD_PPS_TARGET_MV) ? PD_PPS_TARGET_MV : max_mv;
+
+        if(target_mv <= PD_POLICY_SPR_MAX_FIXED_MV || min_mv > target_mv)
+            continue;
+
+        if(ma > PD_POLICY_MAX_REQUEST_MA)
+            ma = PD_POLICY_MAX_REQUEST_MA;
+        if(ma > PD_PPS_MAX_ENCODED_MA)
+            ma = PD_PPS_MAX_ENCODED_MA;
+
+        if((target_mv > best_mv) || ((target_mv == best_mv) && (ma > best_ma)))
+        {
+            best = i;
+            best_mv = target_mv;
+            best_ma = ma;
+        }
+    }
+
+    if(best != 0u)
+    {
+        PD_Selected_PDO = best;
+        PD_Selected_mV = best_mv;
+        PD_Selected_mA = best_ma;
+        PD_Selected_IsPPS = 1u;
+        PD_Ctl.ReqPDO_Idx = best;
+    }
+
+    return best;
+}
+
+/* Build a Programmable RDO. Voltage is 20 mV/LSB, current 50 mA/LSB. */
+static UINT8 PD_PPS_Request(UINT8 pdo_index, UINT16 target_mv, UINT16 request_ma, UINT8 refresh)
+{
+    UINT32 rdo;
+    UINT8 payload[4];
+    UINT8 status;
+
+    if((pdo_index == 0u) || (pdo_index > PD_SourcePDO_Count))
+        return DEF_PD_TX_FAIL;
+
+    if(target_mv > PD_PPS_TARGET_MV)
+        target_mv = PD_PPS_TARGET_MV;
+    if(request_ma > PD_POLICY_MAX_REQUEST_MA)
+        request_ma = PD_POLICY_MAX_REQUEST_MA;
+    if(request_ma > PD_PPS_MAX_ENCODED_MA)
+        request_ma = PD_PPS_MAX_ENCODED_MA;
+
+    /* Programmable RDO: OPOS B31:28, NoUSB Suspend B24, optional EPR-capable
+     * B22, output voltage B20:9, current B6:0. */
+    rdo = ((UINT32)(pdo_index & 0x0Fu) << 28) | (1UL << 24);
+#if PD_EPR_ENABLE
+    if(PD_Source_EPR_Capable && !PD_EPR_FailedForAttach)
+        rdo |= (1UL << 22);
+#endif
+    rdo |= ((UINT32)((target_mv / 20u) & 0x0FFFu) << 9);
+    rdo |=  (UINT32)((request_ma / 50u) & 0x007Fu);
+
+    PD_WriteU32LE(payload, rdo);
+
+    PD_Selected_PDO = pdo_index;
+    PD_Selected_mV = target_mv;
+    PD_Selected_mA = request_ma;
+    PD_Selected_IsPPS = 1u;
+    PD_Ctl.ReqPDO_Idx = pdo_index;
+
+    PD_Load_Header(0x00, DEF_TYPE_REQUEST);
+    status = PD_Send_Handle(payload, 4u);
+
+    if(status == DEF_PD_TX_OK)
+    {
+        PD_Ctl.PD_State = STA_RX_ACCEPT_WAIT;
+        PD_Ctl.PD_Comm_Timer = 0u;
+        if(refresh)
+            printf("[PD] PPS refresh Request: PDO%u, %u mV / %u mA\r\n",
+                   pdo_index, target_mv, request_ma);
+        else
+            printf("[PD] SPR PPS Request PDO%u: %u mV / %u mA%s\r\n",
+                   pdo_index, target_mv, request_ma,
+                   (rdo & (1UL << 22)) ? ", EPR-capable RDO" : "");
+    }
+
+    return status;
+}
+
+/* If PPS is rejected or WAITed, disable it for this attachment and reuse the
+ * already-saved Source_Capabilities to request the best Fixed PDO. */
+static void PD_Fallback_From_PPS(const char *reason)
+{
+    UINT8 fixed;
+
+    if(reason)
+        printf("[PD] PPS fallback: %s; retrying best Fixed PDO\r\n", reason);
+
+    PD_PPS_FailedForAttach = 1u;
+    PD_PPS_ContractActive = 0u;
+    PD_Selected_IsPPS = 0u;
+    PD_ContractMaintenanceMs = 0u;
+
+    fixed = PD_Select_Highest_Fixed_PDO();
+    if(fixed != 0u)
+        PDO_Request(fixed);
+    else
+    {
+        PD_Ctl.PD_State = STA_SRC_CONNECT;
+        PD_Ctl.PD_Comm_Timer = 701u;
+    }
+}
+
 static void PD_Print_Source_PDOs(void)
 {
     UINT8 i;
@@ -721,8 +888,9 @@ static void PD_Print_Source_PDOs(void)
                 UINT16 min_mv = (UINT16)(((raw >> 8) & 0xFFu) * 100u);
                 UINT16 max_mv = (UINT16)(((raw >> 17) & 0xFFu) * 100u);
                 UINT16 ma = (UINT16)((raw & 0x7Fu) * 50u);
-                printf("  PDO%u raw=%08lx PPS_APDO %u-%u mV, %u mA (not requested)\r\n",
-                       i, (unsigned long)raw, min_mv, max_mv, ma);
+                printf("  PDO%u raw=%08lx PPS_APDO %u-%u mV, %u mA%s\r\n",
+                       i, (unsigned long)raw, min_mv, max_mv, ma,
+                       (PD_Selected_IsPPS && (i == PD_Selected_PDO)) ? "  <REQUEST>" : "");
             }
             else
             {
@@ -925,7 +1093,7 @@ static void PD_EPR_Fallback(const char *reason)
     PD_EPR_GetCapSent = 0;
     PD_EPR_KeepAliveWaitAck = 0;
     PD_EPR_TimerMs = 0;
-    PD_EPR_KeepAliveMs = 0;
+    PD_ContractMaintenanceMs = 0;
     PD_Source_EPR_PDP_W = 0u;
     PD_EPR_EnterPDP_W = (UINT8)PD_POLICY_EPR_PDP_FALLBACK_W;
     PD_EPR_EnterRetryUsed = 0u;
@@ -1342,7 +1510,7 @@ static void PD_Main_Proc( )
 
     if(PD_EPR_State == EPR_ST_ACTIVE)
     {
-        PD_EPR_KeepAliveMs = (UINT16)(PD_EPR_KeepAliveMs + Tmr_Ms_Dlt);
+        PD_ContractMaintenanceMs = (UINT16)(PD_ContractMaintenanceMs + Tmr_Ms_Dlt);
         if(PD_EPR_KeepAliveWaitAck)
             PD_EPR_KeepAliveAckMs = (UINT16)(PD_EPR_KeepAliveAckMs + Tmr_Ms_Dlt);
 
@@ -1353,13 +1521,32 @@ static void PD_Main_Proc( )
             PD_EPR_KeepAliveAckMs = 0;
         }
 
-        if(!PD_EPR_KeepAliveWaitAck && PD_EPR_KeepAliveMs >= PD_EPR_KEEPALIVE_PERIOD_MS)
+        if(!PD_EPR_KeepAliveWaitAck && PD_ContractMaintenanceMs >= PD_EPR_KEEPALIVE_PERIOD_MS)
         {
             if(PD_Send_Extended_Control(PD_EXT_CTRL_EPR_KEEPALIVE) == DEF_PD_TX_OK)
             {
                 PD_EPR_KeepAliveWaitAck = 1;
-                PD_EPR_KeepAliveMs = 0;
+                PD_ContractMaintenanceMs = 0;
                 PD_EPR_KeepAliveAckMs = 0;
+            }
+        }
+    }
+    else if(PD_PPS_ContractActive &&
+            PD_EPR_State == EPR_ST_OFF &&
+            PD_Ctl.PD_State == STA_IDLE)
+    {
+        PD_ContractMaintenanceMs = (UINT16)(PD_ContractMaintenanceMs + Tmr_Ms_Dlt);
+        if(PD_ContractMaintenanceMs >= PD_PPS_REFRESH_PERIOD_MS)
+        {
+            if(PD_PPS_Request(PD_Selected_PDO, PD_Selected_mV, PD_Selected_mA, 1u) == DEF_PD_TX_OK)
+            {
+                PD_ContractMaintenanceMs = 0u;
+            }
+            else
+            {
+                /* Try again in about one second, not every scheduler pass. */
+                PD_ContractMaintenanceMs = (UINT16)(PD_PPS_REFRESH_PERIOD_MS -
+                                                     PD_PPS_REFRESH_RETRY_MS);
             }
         }
     }
@@ -1573,11 +1760,18 @@ static void PD_Main_Proc( )
                     PD_Source_EPR_Capable =
                         (PD_Ctl.Flag.Bit.PD_Version && (pdo1 & (1UL << 23))) ? 1u : 0u;
 
-                    var = PD_Select_Highest_Fixed_PDO();
-                    if(var == 0)
+                    /* Prefer SPR PPS >20 V (up to 21 V) for downstream Buck
+                     * headroom; otherwise use the original highest Fixed <=20 V. */
+                    var = PD_Select_Preferred_PPS_APDO();
+                    if(var == 0u)
                     {
-                        var = PDO_INDEX_1;
-                        PD_Selected_PDO = var;
+                        var = PD_Select_Highest_Fixed_PDO();
+                        if(var == 0u)
+                        {
+                            var = PDO_INDEX_1;
+                            PD_Selected_PDO = var;
+                            PD_Selected_IsPPS = 0u;
+                        }
                     }
 
 #if PD_EPR_ENABLE
@@ -1598,7 +1792,10 @@ static void PD_Main_Proc( )
 
                     /* Request first; diagnostics come afterwards so they cannot
                      * consume the Source's tSenderResponse budget. */
-                    PDO_Request(var);
+                    if(PD_Selected_IsPPS)
+                        (void)PD_PPS_Request(var, PD_Selected_mV, PD_Selected_mA, 0u);
+                    else
+                        PDO_Request(var);
 
                     printf("\r\n");
                     PD_Print_Source_PDOs();
@@ -1661,6 +1858,10 @@ static void PD_Main_Proc( )
                     {
                         PD_EPR_Exit_To_SPR("EPR Fixed Request rejected");
                     }
+                    else if(PD_Selected_IsPPS)
+                    {
+                        PD_Fallback_From_PPS("PPS Request rejected");
+                    }
                     else
                     {
                         PD_Ctl.PD_State = STA_IDLE;
@@ -1686,6 +1887,16 @@ static void PD_Main_Proc( )
                     }
 
                     PD_ProtocolRecoveryCount = 0u;
+                    if(PD_Selected_IsPPS)
+                    {
+                        PD_PPS_ContractActive = 1u;
+                        PD_ContractMaintenanceMs = 0u;
+                    }
+                    else
+                    {
+                        PD_PPS_ContractActive = 0u;
+                    }
+
                     if(PD_EPR_State == EPR_ST_SPR_NEGOTIATING)
                     {
                         PD_SPR_ContractActive = 1;
@@ -1704,9 +1915,11 @@ static void PD_Main_Proc( )
                         PD_SPR_ContractActive = 1;
                         PD_EPR_ContractActive = 1;
                         PD_EPR_ModeActive = 1;
+                        PD_PPS_ContractActive = 0u;
+                        PD_Selected_IsPPS = 0u;
                         PD_EPR_State = EPR_ST_ACTIVE;
                         PD_EPR_TimerMs = 0;
-                        PD_EPR_KeepAliveMs = 0;
+                        PD_ContractMaintenanceMs = 0;
                         PD_EPR_KeepAliveWaitAck = 0;
                         PD_Ctl.PD_State = STA_IDLE;
                         printf("[PD] EPR contract ready: PDO%u, %u mV / %u mA\r\n",
@@ -1740,6 +1953,10 @@ static void PD_Main_Proc( )
                     {
                         printf("[PD] WAIT to EPR_Request is a protocol error; Hard Reset\r\n");
                         PD_Ctl.PD_State = STA_TX_HRST;
+                    }
+                    else if(PD_Selected_IsPPS)
+                    {
+                        PD_Fallback_From_PPS("WAIT to PPS Request");
                     }
                     else
                     {

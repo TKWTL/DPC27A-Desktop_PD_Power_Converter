@@ -3,8 +3,6 @@
 #include "power_alloc.h"
 #include "power_limit.h"
 
-static uint8_t s_pwr_alloc_order[PWR_ALLOC_CHIPS];   /* 0 = detached, else attach seq */
-static uint8_t s_pwr_alloc_seq;
 static uint8_t s_pwr_alloc_written[PWR_ALLOC_CHIPS];
 static uint8_t s_pwr_alloc_valid[PWR_ALLOC_CHIPS];
 
@@ -45,55 +43,26 @@ void PWR_Alloc_ApplyDone(uint8_t chip, uint8_t w)
     s_pwr_alloc_valid[chip] = 1u;
 }
 
-void PWR_Alloc_Plan(uint8_t attached_3538, uint8_t attached_c1, uint8_t attached_c2,
+void PWR_Alloc_Plan(const uint8_t measured_w[PWR_ALLOC_CHIPS],
                     uint8_t share[PWR_ALLOC_CHIPS])
 {
-    uint8_t attached[PWR_ALLOC_CHIPS];
-    uint32_t remaining = PWR_Limit_GetW();
-    uint8_t first = 0xFFu;
+    uint32_t budget = PWR_Limit_GetW();
+    uint32_t used = (uint32_t)measured_w[0] + (uint32_t)measured_w[1] +
+                    (uint32_t)measured_w[2];
+    uint32_t others;
+    uint32_t w;
     uint8_t i;
 
-    attached[0] = attached_3538;
-    attached[1] = attached_c1;
-    attached[2] = attached_c2;
-
-    /* Refresh the attach order and split the budget; pure computation (no I2C). */
     for(i = 0u; i < (uint8_t)PWR_ALLOC_CHIPS; i++)
     {
-        if(attached[i] != 0u)
-        {
-            if(s_pwr_alloc_order[i] == 0u)
-                s_pwr_alloc_order[i] = (uint8_t)(++s_pwr_alloc_seq);
-        }
-        else
-        {
-            s_pwr_alloc_order[i] = 0u;      /* unplugged: reservation returns */
-        }
-    }
+        /* This chip keeps what it draws; the free part of the budget (what no
+         * chip is using) is the extra ceiling it sees.  A detached chip
+         * measures 0 W, so it is provisioned with the free headroom only. */
+        others = used - (uint32_t)measured_w[i];
+        w = (budget > others) ? (budget - others) : 0u;
+        if(w > (uint32_t)pwr_alloc_cap_w(i))
+            w = (uint32_t)pwr_alloc_cap_w(i);
 
-    for(i = 0u; i < (uint8_t)PWR_ALLOC_CHIPS; i++)
-    {
-        if((s_pwr_alloc_order[i] != 0u) &&
-           ((first == 0xFFu) || (s_pwr_alloc_order[i] < s_pwr_alloc_order[first])))
-            first = i;
-    }
-
-    for(i = 0u; i < (uint8_t)PWR_ALLOC_CHIPS; i++)
-        share[i] = 0u;
-
-    if(first != 0xFFu)
-    {
-        share[first] = (pwr_alloc_cap_w(first) < remaining) ?
-                       pwr_alloc_cap_w(first) : (uint8_t)remaining;
-        remaining -= share[first];
-    }
-
-    for(i = 0u; i < (uint8_t)PWR_ALLOC_CHIPS; i++)
-    {
-        if(i != first)
-        {
-            share[i] = (pwr_alloc_cap_w(i) < remaining) ?
-                       pwr_alloc_cap_w(i) : (uint8_t)remaining;
-        }
+        share[i] = (uint8_t)w;
     }
 }

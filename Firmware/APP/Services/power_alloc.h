@@ -1,19 +1,24 @@
 /* Output power allocation policy for the three fast-charge controllers.
  *
  * The dashboard supplies the total input budget (PWR_Limit_GetW(), see
- * power_limit.h: UVP 0 W, PD 95% of the contract power, DC user value).
- * Chips are provisioned in plug-in order, because only the first attachment
- * can be served with certainty:
- *   - the first chip with a device attached reserves min(its cap, budget);
- *   - every other chip (attached later or not yet) gets min(its cap, what is
- *     left), so a later load still finds the best available ceiling;
- *   - unplugging releases the reservation automatically - the plan is rebuilt
- *     from scratch on every power-mirror pass.
+ * power_limit.h: UVP 0 W, PD 95% of the contract power, DC user value) and the
+ * caller supplies each chip's measured output power from its ADC mirror
+ * (APP/app_tasks.c thread_power_mirror; ports without a device are passed as
+ * 0 W):
+ *   - each chip keeps the power it currently draws and additionally sees the
+ *     still-free part of the budget:
+ *       share[i] = budget - sum(measured_w of the other chips),
+ *     capped to the controller ceiling (SW3538 140 W, SW3526 65 W);
+ *   - a detached port measures 0 W, so its share is the free headroom and a
+ *     later attachment finds the best available ceiling; unplugging returns
+ *     the share automatically - the plan is rebuilt on every power-mirror pass;
+ *   - oversubscription (several chips may see the same free headroom) and
+ *     measurement ripple are accepted by design.
  * Shares are clamped into the range each SetPowerLimitW() accepts
  * (SW3538 18..140 W, SW3526 12..71 W via PWR_Alloc_ApiW()) and the
  * ApplyNeeded/ApplyDone pair makes thread_power_mirror write only on change.
  *
- * Pure RAM work: the caller supplies the attach flags and performs the actual
+ * Pure RAM work: the caller supplies the measurements and performs the actual
  * I2C writes from thread_power_mirror (APP/app_tasks.c).
  */
 #ifndef POWER_ALLOC_H_
@@ -33,9 +38,9 @@ extern "C" {
 #define PWR_API_MIN_SW3526_W 12u   /* range accepted by SW3526_SetPowerLimitW() */
 #define PWR_API_MAX_SW3526_W 71u
 
-/* Rebuild the allocation plan from the current attach flags.  share[] always
- * receives PWR_ALLOC_CHIPS entries (0 when nothing is attached). */
-void PWR_Alloc_Plan(uint8_t attached_3538, uint8_t attached_c1, uint8_t attached_c2,
+/* Rebuild the allocation plan from the per-chip measured output power (0 W for
+ * ports without a device).  share[] always receives PWR_ALLOC_CHIPS entries. */
+void PWR_Alloc_Plan(const uint8_t measured_w[PWR_ALLOC_CHIPS],
                     uint8_t share[PWR_ALLOC_CHIPS]);
 
 /* Clamp a share into the range the chip's SetPowerLimitW() accepts. */

@@ -12,9 +12,15 @@
  * request and performs the write from thread_power_mirror, so the UI never
  * touches the buses directly and each I2C handle keeps a single owner thread.
  *
- * RAM-only, like the other MiaoUI settings: until the user changes something
- * the chips keep their power-up defaults, and a power cycle resets both the
- * UI state and the chips back to those defaults.
+ * RAM-only, like the other MiaoUI settings: a power cycle resets both the UI
+ * state and the chips back to their power-up defaults.  The firmware
+ * re-establishes the intended baseline at every boot and again whenever a
+ * controller returns from offline: app_tasks.c pushes an "every family
+ * enabled" mask to all three controllers (and enables both SW3538
+ * fast-charge paths), so vendor OTP differences cannot leave functions
+ * disabled; these switches only track the user's deviations from that
+ * all-enabled baseline, and a controller reconnection resets both the chips
+ * and the switch states back to that baseline.
  */
 #include "port_pages.h"
 
@@ -132,6 +138,25 @@ static void port_proto_3526_changed(ui_t *ui)
                            proto_build_mask(s_protos_3526,
                                             PORT_PROTO_3526_COUNT,
                                             s_state_3526[idx]));
+}
+
+/* Re-enable every switch on all three pages.  app_tasks.c pairs this with the
+ * "every family enabled" masks pushed to the controllers - at boot and again
+ * whenever a controller reconnects - so page state and chip state always
+ * share the same baseline. */
+void PortPages_EnableAllProtocols(void)
+{
+    uint8_t k;
+    uint8_t idx;
+
+    for(k = 0u; k < PORT_PROTO_3538_COUNT; ++k)
+        s_state_3538[k] = 1u;
+
+    for(idx = 0u; idx < 2u; ++idx)
+    {
+        for(k = 0u; k < PORT_PROTO_3526_COUNT; ++k)
+            s_state_3526[idx][k] = 1u;
+    }
 }
 
 /* ------------------------------------------------------------------ */
