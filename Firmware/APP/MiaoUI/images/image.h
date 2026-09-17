@@ -11,4 +11,7 @@ extern const unsigned char img_user_account[];
 extern const unsigned char img_burn_in[];
 extern const unsigned char img_sleep[];
 extern const unsigned char img_dino[];
+extern const unsigned char img_type_ac[];
+extern const unsigned char img_type_c1[];
+extern const unsigned char img_type_c2[];
 #endif

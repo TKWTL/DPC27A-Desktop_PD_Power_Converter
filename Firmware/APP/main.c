@@ -7,10 +7,17 @@
 #include "usart_async.h"
 #include "pd.h"
 #include "app_tasks.h"
+#include "ch32x035_it.h"
 
 int main(void)
 {
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_1);
+
+    /* Preemption policy + VTF entries (see ch32x035_it.c).  USBPD is the only
+     * preemption-0 source; the deepest normal nesting is 2 levels (DMA <- PD),
+     * matching the V4C hardware stack. */
+    APP_IRQ_Init();
+
     SystemCoreClockUpdate();
     Delay_Init();
 

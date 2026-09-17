@@ -5,10 +5,11 @@
 ## 目录结构
 
 ```text
-APP/                 入口、任务注册、功率限制/风扇曲线(`power_limit.c/.h`、`fan_control.c/.h`) + MiaoUI + 页面函数
+APP/                 入口、任务注册 + MiaoUI + 页面函数
+  Services/          输出侧策略模块:总功率限制(`power_limit.c/.h`)、功率分配(`power_alloc.c/.h`)、风扇曲线(`fan_control.c/.h`)
   framework/         低功耗状态机与 UI_OFF 休眠(`pm_*.c/.h`,含 Sleep 菜单)
   MiaoUI/            精简菜单/UI 移植,单字体 + XBM 图标(仪表盘/设置/关于/烧屏/休眠/恐龙)
-  Pages/             页面函数(Dashboard 仪表盘、服务页、`game_dinosaur.c` 小游戏)
+  Pages/             页面函数(Dashboard 仪表盘、`port_pages.c` 端口协议页、服务页、`game_dinosaur.c` 小游戏)
 BSP/                 板级启动 + 器件驱动
   SW3538/            硬件 I2C 双口快充控制器驱动
   SW3526/            句柄式双实例快充控制器驱动
@@ -58,6 +59,17 @@ Project/obj/         构建产物(除 `.gitkeep` 外被忽略)
 > 看门狗:`APP_Tasks_Init()` 末尾使能 IWDG(LSI,约 1–3 s),仅在 `APP_Tasks_Idle()` 每轮刷新;
 > 卡死后的整机复位可以从下次启动的 `[RESET] cause: … IWDG` 确认。
 
+## 中断与 VTF
+
+- **抢占级 0(唯一)**:`USBPD` —— 可打断其它任何 ISR,GoodCRC 路径不被批量传输阻塞;
+- **抢占级 1**:SPI TX DMA1_CH3、USART TX/RX DMA1_CH4/5、I2C1 EV+ER、I2C TX/RX
+  DMA1_CH6/7、SysTick —— 同级互不抢占;**最坏嵌套 2 级**(DMA ← USBPD),
+  正好为 V4C 的两级硬件压栈;全部 ISR 以 `WCH-Interrupt-fast` 声明;
+- **VTF 免表入口**:VTF0=USBPD、VTF1=USART TX、VTF2=USART RX、VTF3=SPI TX;
+- 单点维护:`APP/ch32x035_it.c` 的 `APP_IRQ_Init()` 持有优先级总表与 VTF 映射,
+  由 `main()` 在启动早期调用;**新增外设中断必须注册进该表**(IPRIOR 复位值 0x00
+  会把它误落在 USBPD 同级,拖慢 PD 响应)。
+
 ## 电源控制器驱动现状
 
 - SW3538 通过 `Peripheral/I2C` 共享硬件 I2C1;驱动提供协议解码、端口/在线状态以及
@@ -66,7 +78,10 @@ Project/obj/         构建产物(除 `.gitkeep` 外被忽略)
   可以同时使用,不依赖全局驱动状态。
 - 器件 API 遵循 SW6306 命名惯例:`STRG` 表示状态/回读,`CTRG` 表示控制/配置;
   协程式 load 函数把解码后的状态缓存在句柄中。
-- 目前两颗芯片的驱动均为“状态/遥测”型,尚不提供逐端口的协议使能/配置 API。
+- 在状态/遥测之外,驱动现提供协议使能掩码(`*_SetProtocolMask`)、功率上限
+  (`*_SetPowerLimitW`)与保护状态读取;UI 端口协议页的改动经 `APP_PortProtocol_Touch()`
+  防抖 800 ms,由 `thread_power_mirror` 执行写入(UI 永不直接触碰总线;掩码写会使
+  在线设备重新协商)。SW3526 的 VOOC 位保留在驱动内,但不在 UI 提供开关。
 
 `Board_RebootToISP()` 选择 CH32X035 出厂 BOOT 区并执行软复位,是应用层进入
 WCH ISP 模式的接口。
@@ -78,7 +93,7 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 
 - PB9 使用原生 TIM1_CH1 输出 187.5 kHz PWM。PSC=0、ARR=255 使 CCR1 与 8 位占空比
   一一对应(0..255 共 256 级);`FAN_PWM_SetDuty8()` 即该量程的唯一接口。
-- 转速由 `thread_fan` 按 `APP/fan_control.c` 的曲线自动控制:UVP 停转、GX21M15U
+- 转速由 `thread_fan` 按 `Services/fan_control.c` 的曲线自动控制:UVP 停转、GX21M15U
   失效全速,平时 40 °C 启动 / 37 °C 停止,之后每升高 1 °C 占空比 +2(启动点 80,静音直跳)。
 - SH1107 使用 SPI1 重映射 10:PA11 SCK、PA10 MOSI、PA12(硬件 NSS 片选)、PA9 D/C。
   SPI 时钟 12 MHz,SPI TX 使用 DMA1 CH3,整帧分页由 DMA 完成中断推进。
@@ -90,8 +105,9 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
   帧按 page 分批发运,像素数据传输期间不会长时间占住前台调度器。
 - MiaoUI 保留剪裁窗口、圆角矩形/框、XBM 图片、圆/线图元和文本渲染;
   当前只链接 `font_menu_main_h12w6` 一个字体。
-- 首屏是 **Dashboard 仪表盘函数页**(见下),图标菜单含 dashboard/设置/烧屏测试/
-  小恐龙/关于,仪表盘与其它全屏页一样都只是被菜单调用的绘制函数;仪表盘上导航键
+- 首屏是 **Dashboard 仪表盘函数页**(见下),图标菜单含 dashboard/设置/三个端口协议页
+  (TypeA+C/TypeC1/TypeC2,`APP/Pages/port_pages.c`)/烧屏测试/小恐龙/关于,
+  仪表盘与其它全屏页一样都只是被菜单调用的绘制函数;仪表盘上导航键
   被忽略,按 K2(ENTER,松开触发)返回图标菜单,长按 K2=BACK 同样返回。
   K1=DOWN,K2=ENTER(长按=BACK:子页回上级、根菜单立即休眠),两路 GPIO 使用内部
   上拉、电气低有效,沿用原有消抖/长按状态机。
@@ -112,7 +128,7 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 
 - 行高 12 px + 1 px 间隔:行基线 `y = 12 + 13*(行-1)`;列右边界 43/85/127 px,
   数值右对齐 —— 偏宽的数值占用 1 字符间隙,SW3538 列 7 字符可容下 `139.02W`。
-- **总功率限制**(`APP/power_limit.c`):UVP(输入 < 8 V)固定 `0 W`;PD 固定为合同
+- **总功率限制**(`Services/power_limit.c`):UVP(输入 < 8 V)固定 `0 W`;PD 固定为合同
   功率的 95%;DC 下按 DOWN 调节,上电默认 `270 W`(最大值),每次 -10 W,到
   `60 W` 后回绕到 `270 W`。该值由 `thread_power_mirror` 用于芯片功率分配;
   第一行显示为 `270Wmax`(数字 3 位右对齐,`W` 与旧 `140Wmax` 同一位置)。

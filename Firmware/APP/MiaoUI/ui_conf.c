@@ -7,6 +7,7 @@
 
 #include "Pages/dashboard.h"
 #include "Pages/service_pages.h"
+#include "Pages/port_pages.h"
 #include "Pages/game_dinosaur.h"
 #include "framework/pm_ui_register.h"
 
@@ -32,7 +33,11 @@ void Create_Text(ui_t *ui)
 
     (void)ui;
 
-    about_text.ptr = "Desktop PD Power\nMiaoUI + u8g2\nSH1107 / SPI DMA\nAGPL-3.0-only";
+    /* About page body.  Text_Widget() renders 20 chars per line (UI_HOR_RES /
+     * UI_FONT_WIDTH - 1) with a 12 px line step, so keep every line <= 20
+     * characters and the whole block within ~6 visible lines.  A full line is
+     * 20 x 6 px + 4 px inset = 124 px, inside the 128 px panel width. */
+    about_text.ptr = "  Desktop PD Power\nSource: https://github.com/TKWTL/Desktop_PD_Power_Converter\n MiaoUI u8g2 coroOS\nMIT BSD-2 BSD-3 AGPL";
     about_text.font = UI_FONT;
     about_text.fontHight = UI_FONT_HIGHT;
     about_text.fontWidth = UI_FONT_WIDTH;
@@ -48,6 +53,10 @@ void Create_MenuTree(ui_t *ui)
     AddItem("-Dashboard", UI_ITEM_WORD, img_dashboard,
             &s_dashboard_item, &s_main_page, 0, Dashboard_Page);
 
+    /* Per-port fast-charge protocol pages: three more icon-page entries that
+     * open [TypeA+C], [TypeC1] and [TypeC2]. */
+    Add_Port_Items(&s_main_page);
+
     AddItem("-Settings", UI_ITEM_PARENTS, img_configuration,
             &s_settings_item, &s_main_page, &s_settings_page, 0);
         AddPage("[Settings]", &s_settings_page, UI_PAGE_TEXT, &s_main_page);
@@ -56,9 +65,6 @@ void Create_MenuTree(ui_t *ui)
         PM_UI_AddSleepSettingsItems(&s_settings_page);
         Add_Disp_Items(&s_settings_page);
         Add_Service_Items(&s_settings_page);
-
-    /* No "-Sleep" icon any more: the root menu answers BACK (long press of
-     * ENTER) with pm_api_force_sleep(), see Process_UI_Run() in core/ui.c. */
 
     AddItem("-Burn-in Test", UI_ITEM_WORD, img_burn_in,
             &s_burnin_item, &s_main_page, 0, Burnin_Page);

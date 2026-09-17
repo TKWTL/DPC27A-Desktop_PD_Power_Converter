@@ -7,21 +7,18 @@
 extern "C" {
 #endif
 
-/* Board power policy. */
-#define PD_REQUEST_MAX_FIXED_MV         20000U
-/* SPR current ceiling: request the Source's full advertised current.
- *
- * Product policy is maximum power in every scenario.  The board is field-
- * tested with a 5 A e-marked cable (the verified reference flow on this
- * charger is itself SPR 20 V / 5 A -> EPR -> 28 V / 5 A), and the old "5 A
- * request collapsed the rail" scare was the PHY deadline bug, not the cable.
- * This constant only clamps runaway PDO values; the actual request is always
- * min(PDO current, this). */
-#define PD_SPR_REQUEST_MAX_MA           5000U
-#define PD_EPR_ENABLE                   1U
-#define PD_EPR_TARGET_MV                28000U
-#define PD_EPR_REQUEST_MAX_MA           5000U
-#define PD_EPR_SINK_PDP_W               140U
+/* Board power policy - two layers (2026-09-17 request-strategy upgrade):
+ *   - nominal: the product contract promised by the UI/manual;
+ *   - policy ceilings: what the adaptive request path in pd.c (PD_POLICY_*)
+ *     may ask from a non-standard source.  Actual requests always clamp to
+ *     what the Source advertises. */
+#define PD_SPR_MAX_FIXED_MV             20000U   /* SPR fixed-PDO ceiling */
+#define PD_EPR_NOMINAL_MV               28000U   /* nominal EPR contract voltage */
+#define PD_NOMINAL_REQUEST_MA            5000U   /* nominal contract current */
+#define PD_POLICY_REQUEST_MAX_MA         7000U   /* adaptive current ceiling (pd.c) */
+#define PD_POLICY_EPR_MAX_FIXED_MV      32000U   /* adaptive EPR voltage ceiling (pd.c) */
+#define PD_NOMINAL_PDP_W                  140U   /* nominal Sink PDP */
+#define PD_EPR_ENABLE                      1U
 
 /* USB identity VDO values, kept for a future identity experiment.
  *

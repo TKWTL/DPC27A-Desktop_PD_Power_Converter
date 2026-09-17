@@ -60,6 +60,81 @@ static uint8_t encode_power_w(uint8_t watts, uint8_t *code)
     return 0u;
 }
 
+
+static void decode_protocol_config(SW3526_Handle *handle)
+{
+    SW3526_ProtocolMask mask = 0u;
+    uint8_t fc0;
+    uint8_t fc1;
+    uint8_t fc2;
+    uint8_t fc4;
+
+    if(handle == 0)
+        return;
+
+    fc0 = handle->protocol_config.raw_fc0;
+    fc1 = handle->protocol_config.raw_fc1;
+    fc2 = handle->protocol_config.raw_fc2;
+    fc4 = handle->protocol_config.raw_fc4;
+
+    /* Reg0xAC[2] is a global gate.  Reg0xAA[5] separately gates the
+     * DPDM/BC block. */
+    if((fc4 & SW3526_FC4_DISABLE_FAST_CHARGE) == 0u)
+    {
+        if((fc2 & SW3526_FC2_DISABLE_DPDM) == 0u)
+        {
+            if((fc0 & SW3526_FC0_DISABLE_QC2) == 0u)  mask |= SW3526_PROTOCOL_ENABLE_QC2;
+            if((fc0 & SW3526_FC0_DISABLE_QC3) == 0u)  mask |= SW3526_PROTOCOL_ENABLE_QC3;
+            if((fc0 & SW3526_FC0_DISABLE_FCP) == 0u)  mask |= SW3526_PROTOCOL_ENABLE_FCP;
+            if((fc0 & SW3526_FC0_DISABLE_SCP) == 0u)  mask |= SW3526_PROTOCOL_ENABLE_SCP;
+            if((fc0 & SW3526_FC0_DISABLE_PE) == 0u)   mask |= SW3526_PROTOCOL_ENABLE_PE;
+            if((fc0 & SW3526_FC0_DISABLE_VOOC) == 0u) mask |= SW3526_PROTOCOL_ENABLE_VOOC;
+            if((fc0 & SW3526_FC0_DISABLE_SFCP) == 0u) mask |= SW3526_PROTOCOL_ENABLE_SFCP;
+            if((fc0 & SW3526_FC0_DISABLE_AFC) == 0u)  mask |= SW3526_PROTOCOL_ENABLE_AFC;
+        }
+
+        if((fc1 & SW3526_FC1_DISABLE_PD) == 0u)
+            mask |= SW3526_PROTOCOL_ENABLE_PD;
+    }
+
+    handle->protocol_config.enabled_mask = mask;
+}
+
+static void decode_protection_status(SW3526_Handle *handle)
+{
+    uint8_t fault;
+    uint8_t fc3;
+
+    if(handle == 0)
+        return;
+
+    fault = handle->protection.raw_fault;
+    fc3 = handle->protection.raw_fc3;
+
+    handle->protection.vin_ovp =
+        (fault & SW3526_STRG_FAULT_VIN_OVP) ? 1u : 0u;
+    handle->protection.over_temperature_alarm =
+        (fault & SW3526_STRG_FAULT_OTP_ALARM) ? 1u : 0u;
+    handle->protection.over_temperature_shutdown =
+        (fault & SW3526_STRG_FAULT_OTP_SHUTDOWN) ? 1u : 0u;
+    handle->protection.output_short =
+        (fault & SW3526_STRG_FAULT_SHORT) ? 1u : 0u;
+    handle->protection.any_fault =
+        (fault & (SW3526_STRG_FAULT_VIN_OVP |
+                  SW3526_STRG_FAULT_OTP_ALARM |
+                  SW3526_STRG_FAULT_OTP_SHUTDOWN |
+                  SW3526_STRG_FAULT_SHORT)) ? 1u : 0u;
+
+    handle->protection.pd_overcurrent_oc_mode =
+        (fc3 & SW3526_FC3_PD_OCP_OC_MODE) ? 1u : 0u;
+    handle->protection.qc3_overcurrent_voltage_drop_mode =
+        (fc3 & SW3526_FC3_QC3_OCP_VDROP_MODE) ? 1u : 0u;
+    handle->protection.qc3_constant_power =
+        (fc3 & SW3526_FC3_QC3_CONST_POWER) ? 1u : 0u;
+    handle->protection.pps_constant_power =
+        (fc3 & SW3526_FC3_PPS_CONST_POWER) ? 1u : 0u;
+}
+
 void SW3526_HandleInit(SW3526_Handle *handle, SoftI2C_Handle *i2c)
 {
     if(handle == 0)
@@ -180,8 +255,11 @@ SW3526_RET SW3526_PortStatusLoad(SW3526_NOARG)
     SW3526_FUNC_BEGIN;
     SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle, SW3526_STRG_SYS_STAT, &handle->status.sys_stat));
     SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle, SW3526_STRG_FAULT, &handle->status.fault));
+    handle->protection.raw_fault = handle->status.fault;
+    decode_protection_status(handle);
     SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle, SW3526_STRG_POWER, &handle->status.power_state));
     handle->status.power_state &= 0x7Fu;
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle, SW3526_STRG_CC_STATE, &handle->status.cc_state));
     SW3526_FUNC_END;
 }
 
@@ -193,21 +271,141 @@ SW3526_RET SW3526_StatusLoad(SW3526_NOARG)
     SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle, SW3526_STRG_PROTOCOL, &handle->status.protocol));
     SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle, SW3526_STRG_SYS_STAT, &handle->status.sys_stat));
     SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle, SW3526_STRG_FAULT, &handle->status.fault));
+    handle->protection.raw_fault = handle->status.fault;
+    decode_protection_status(handle);
     SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle, SW3526_STRG_POWER, &handle->status.power_state));
     handle->status.power_state &= 0x7Fu;
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle, SW3526_STRG_CC_STATE, &handle->status.cc_state));
+
+    SW3526_FUNC_END;
+}
+
+
+SW3526_RET SW3526_ProtocolConfigLoad(SW3526_NOARG)
+{
+    SW3526_FUNC_BEGIN;
+
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle,
+                                     SW3526_CTRG_FC_CONFIG0,
+                                     &handle->protocol_config.raw_fc0));
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle,
+                                     SW3526_CTRG_FC_CONFIG1,
+                                     &handle->protocol_config.raw_fc1));
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle,
+                                     SW3526_CTRG_FC_CONFIG2,
+                                     &handle->protocol_config.raw_fc2));
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle,
+                                     SW3526_CTRG_FC_CONFIG4,
+                                     &handle->protocol_config.raw_fc4));
+    decode_protocol_config(handle);
+
+    SW3526_FUNC_END;
+}
+
+SW3526_RET SW3526_SetProtocolMask(SW3526_ARGS(SW3526_ProtocolMask mask))
+{
+    SW3526_FUNC_BEGIN;
+
+    if(handle == 0 || (mask & (SW3526_ProtocolMask)~SW3526_PROTOCOL_ENABLE_ALL) != 0u)
+    {
+        if(handle != 0)
+            handle->last_io = SW3526_IO_ERROR;
+        SW3526_RETURN_END();
+    }
+
+    /* Read-modify-write is intentional: RG012_1 marks reserved/config fields
+     * as values that must not be changed. */
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle,
+                                     SW3526_CTRG_FC_CONFIG0,
+                                     &handle->protocol_config.raw_fc0));
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle,
+                                     SW3526_CTRG_FC_CONFIG1,
+                                     &handle->protocol_config.raw_fc1));
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle,
+                                     SW3526_CTRG_FC_CONFIG2,
+                                     &handle->protocol_config.raw_fc2));
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle,
+                                     SW3526_CTRG_FC_CONFIG4,
+                                     &handle->protocol_config.raw_fc4));
+
+    /* Config0 uses active-low disable bits. */
+    handle->protocol_config.raw_fc0 =
+        (uint8_t)((mask & SW3526_PROTOCOL_ENABLE_SCP)  ? (handle->protocol_config.raw_fc0 & (uint8_t)~SW3526_FC0_DISABLE_SCP)  : (handle->protocol_config.raw_fc0 | SW3526_FC0_DISABLE_SCP));
+    handle->protocol_config.raw_fc0 =
+        (uint8_t)((mask & SW3526_PROTOCOL_ENABLE_VOOC) ? (handle->protocol_config.raw_fc0 & (uint8_t)~SW3526_FC0_DISABLE_VOOC) : (handle->protocol_config.raw_fc0 | SW3526_FC0_DISABLE_VOOC));
+    handle->protocol_config.raw_fc0 =
+        (uint8_t)((mask & SW3526_PROTOCOL_ENABLE_SFCP) ? (handle->protocol_config.raw_fc0 & (uint8_t)~SW3526_FC0_DISABLE_SFCP) : (handle->protocol_config.raw_fc0 | SW3526_FC0_DISABLE_SFCP));
+    handle->protocol_config.raw_fc0 =
+        (uint8_t)((mask & SW3526_PROTOCOL_ENABLE_QC2)  ? (handle->protocol_config.raw_fc0 & (uint8_t)~SW3526_FC0_DISABLE_QC2)  : (handle->protocol_config.raw_fc0 | SW3526_FC0_DISABLE_QC2));
+    handle->protocol_config.raw_fc0 =
+        (uint8_t)((mask & SW3526_PROTOCOL_ENABLE_QC3)  ? (handle->protocol_config.raw_fc0 & (uint8_t)~SW3526_FC0_DISABLE_QC3)  : (handle->protocol_config.raw_fc0 | SW3526_FC0_DISABLE_QC3));
+    handle->protocol_config.raw_fc0 =
+        (uint8_t)((mask & SW3526_PROTOCOL_ENABLE_FCP)  ? (handle->protocol_config.raw_fc0 & (uint8_t)~SW3526_FC0_DISABLE_FCP)  : (handle->protocol_config.raw_fc0 | SW3526_FC0_DISABLE_FCP));
+    handle->protocol_config.raw_fc0 =
+        (uint8_t)((mask & SW3526_PROTOCOL_ENABLE_AFC)  ? (handle->protocol_config.raw_fc0 & (uint8_t)~SW3526_FC0_DISABLE_AFC)  : (handle->protocol_config.raw_fc0 | SW3526_FC0_DISABLE_AFC));
+    handle->protocol_config.raw_fc0 =
+        (uint8_t)((mask & SW3526_PROTOCOL_ENABLE_PE)   ? (handle->protocol_config.raw_fc0 & (uint8_t)~SW3526_FC0_DISABLE_PE)   : (handle->protocol_config.raw_fc0 | SW3526_FC0_DISABLE_PE));
+
+    /* Master PD enable only.  Individual 9/12/15/20 V and PPS slots are
+     * preserved exactly as they were. */
+    if(mask & SW3526_PROTOCOL_ENABLE_PD)
+        handle->protocol_config.raw_fc1 &= (uint8_t)~SW3526_FC1_DISABLE_PD;
+    else
+        handle->protocol_config.raw_fc1 |= SW3526_FC1_DISABLE_PD;
+
+    /* DPDM block is only required by the non-PD protocol families above. */
+    if(mask & SW3526_PROTOCOL_ENABLE_DPDM_ALL)
+        handle->protocol_config.raw_fc2 &= (uint8_t)~SW3526_FC2_DISABLE_DPDM;
+    else
+        handle->protocol_config.raw_fc2 |= SW3526_FC2_DISABLE_DPDM;
+
+    /* Keep the chip-level fast-charge gate coherent with the requested mask. */
+    if(mask != 0u)
+        handle->protocol_config.raw_fc4 &= (uint8_t)~SW3526_FC4_DISABLE_FAST_CHARGE;
+    else
+        handle->protocol_config.raw_fc4 |= SW3526_FC4_DISABLE_FAST_CHARGE;
+
+    SW3526_SPAWN_IO(SW3526_ByteWrite(&handle->io_pt, handle, SW3526_CTRG_WREN, SW3526_WREN_STEP1));
+    SW3526_SPAWN_IO(SW3526_ByteWrite(&handle->io_pt, handle, SW3526_CTRG_WREN, SW3526_WREN_STEP2));
+    SW3526_SPAWN_IO(SW3526_ByteWrite(&handle->io_pt, handle, SW3526_CTRG_WREN, SW3526_WREN_STEP3));
+    SW3526_SPAWN_IO(SW3526_ByteWrite(&handle->io_pt, handle,
+                                      SW3526_CTRG_FC_CONFIG0,
+                                      handle->protocol_config.raw_fc0));
+    SW3526_SPAWN_IO(SW3526_ByteWrite(&handle->io_pt, handle,
+                                      SW3526_CTRG_FC_CONFIG1,
+                                      handle->protocol_config.raw_fc1));
+    SW3526_SPAWN_IO(SW3526_ByteWrite(&handle->io_pt, handle,
+                                      SW3526_CTRG_FC_CONFIG2,
+                                      handle->protocol_config.raw_fc2));
+    SW3526_SPAWN_IO(SW3526_ByteWrite(&handle->io_pt, handle,
+                                      SW3526_CTRG_FC_CONFIG4,
+                                      handle->protocol_config.raw_fc4));
+
+    decode_protocol_config(handle);
+    SW3526_FUNC_END;
+}
+
+SW3526_RET SW3526_ProtectionStatusLoad(SW3526_NOARG)
+{
+    SW3526_FUNC_BEGIN;
+
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle,
+                                     SW3526_STRG_FAULT,
+                                     &handle->protection.raw_fault));
+    handle->status.fault = handle->protection.raw_fault;
+    SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle,
+                                     SW3526_CTRG_FC_CONFIG3,
+                                     &handle->protection.raw_fc3));
+    decode_protection_status(handle);
 
     SW3526_FUNC_END;
 }
 
 SW3526_RET SW3526_SetPowerLimitW(SW3526_ARGS(uint8_t watts))
 {
-    /* static: value crosses the sub-coroutine yields below (an automatic local
-     * is lost when the function resumes at its saved case label). */
-    static uint8_t code;
-
     SW3526_FUNC_BEGIN;
 
-    if(handle == 0 || !encode_power_w(watts, &code))
+    if(handle == 0 || !encode_power_w(watts, &handle->op_u8))
     {
         if(handle != 0)
             handle->last_io = SW3526_IO_ERROR;
@@ -221,7 +419,7 @@ SW3526_RET SW3526_SetPowerLimitW(SW3526_ARGS(uint8_t watts))
     SW3526_SPAWN_IO(SW3526_ByteRead(&handle->io_pt, handle, SW3526_CTRG_FC_CONFIG3, &handle->rxbuf[0]));
     handle->rxbuf[0] |= SW3526_CTRG_FC_CONFIG3_REG_PWR;
     SW3526_SPAWN_IO(SW3526_ByteWrite(&handle->io_pt, handle, SW3526_CTRG_FC_CONFIG3, handle->rxbuf[0]));
-    SW3526_SPAWN_IO(SW3526_ByteWrite(&handle->io_pt, handle, SW3526_CTRG_POWER_CONFIG, code));
+    SW3526_SPAWN_IO(SW3526_ByteWrite(&handle->io_pt, handle, SW3526_CTRG_POWER_CONFIG, handle->op_u8));
 
     handle->status.configured_power_w = watts;
     SW3526_FUNC_END;
@@ -230,6 +428,16 @@ SW3526_RET SW3526_SetPowerLimitW(SW3526_ARGS(uint8_t watts))
 const struct SW3526_StatusTypedef *SW3526_GetStatus(const SW3526_Handle *handle)
 {
     return (handle != 0) ? &handle->status : 0;
+}
+
+const SW3526_ProtocolConfig *SW3526_GetProtocolConfig(const SW3526_Handle *handle)
+{
+    return (handle != 0) ? &handle->protocol_config : 0;
+}
+
+const SW3526_ProtectionStatus *SW3526_GetProtectionStatus(const SW3526_Handle *handle)
+{
+    return (handle != 0) ? &handle->protection : 0;
 }
 
 uint8_t SW3526_IsOnline(const SW3526_Handle *handle)
@@ -270,6 +478,16 @@ uint8_t SW3526_IsPortOn(const SW3526_Handle *handle)
 uint8_t SW3526_IsBuckOn(const SW3526_Handle *handle)
 {
     return (handle != 0 && (handle->status.sys_stat & SW3526_STRG_SYS_STAT_BUCK_ON) != 0u) ? 1u : 0u;
+}
+
+uint8_t SW3526_IsCC1Attached(const SW3526_Handle *handle)
+{
+    return (handle != 0 && (handle->status.cc_state & SW3526_STRG_CC_STATE_CC1) != 0u) ? 1u : 0u;
+}
+
+uint8_t SW3526_IsCC2Attached(const SW3526_Handle *handle)
+{
+    return (handle != 0 && (handle->status.cc_state & SW3526_STRG_CC_STATE_CC2) != 0u) ? 1u : 0u;
 }
 
 uint8_t SW3526_GetPDVersion(const SW3526_Handle *handle)

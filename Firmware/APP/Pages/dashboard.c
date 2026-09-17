@@ -28,7 +28,7 @@
 #include "app_tasks.h"
 #include "display/dispDriver.h"
 #include "pd.h"
-#include "power_limit.h"
+#include "Services/power_limit.h"
 #include "vbus_sense.h"
 
 #include <stdio.h>

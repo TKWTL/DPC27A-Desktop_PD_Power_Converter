@@ -64,6 +64,24 @@ All data required after a coroutine yield is stored either in the device handle
 or in static task storage. Device drivers do not use a single global status
 object, which is essential for the two SW3526 instances.
 
+## Interrupts and VTF
+
+The QingKe V4C PFIC runs with the two priority levels the two-level hardware
+stack supports:
+
+- preemption 0 - `USBPD` only, so the GoodCRC path may preempt any other ISR
+  and never waits behind a bulk transfer;
+- preemption 1 - SPI TX DMA1 CH3, USART TX/RX DMA1 CH4/5, I2C1 EV/ER, I2C
+  TX/RX DMA1 CH6/7 and the SysTick tick; level-1 handlers never preempt each
+  other, so the deepest normal nesting is two levels (DMA <- USBPD).
+
+All ISRs are declared `interrupt("WCH-Interrupt-fast")` (hardware stack).
+Four vector-table-free (VTF) entries skip the vector fetch on entry:
+VTF0 = USBPD, VTF1 = USART TX, VTF2 = USART RX, VTF3 = SPI TX.
+`APP_IRQ_Init()` (`APP/ch32x035_it.c`, called from `main()`) owns the priority
+table and the VTF map; every new interrupt must be registered there too,
+because IPRIOR resets to 0x00 and would alias it onto the USBPD level.
+
 ## Driver register naming
 
 The SW3538/SW3526 headers intentionally mirror the existing SW6306 style:
@@ -82,8 +100,10 @@ direct jump into ROM while PD/I2C/DMA/application state is still active.
 
 ## Implemented baseline (moved from the root README)
 
-- USB-PD Sink policy: SPR negotiation plus USB-PD 3.1 EPR entry and the 28 V
-  fixed EPR request path, inherited from the validated DemoBoard stack;
+- USB-PD Sink policy: SPR negotiation plus USB-PD 3.1 EPR entry; the request
+  path is adaptive (Get_Source_Cap_Extended -> Source-PDP-based EPR Enter ->
+  highest-voltage EPR Fixed PDO, non-standard voltages up to 32 V / currents up
+  to the 7 A policy ceiling; nominal contract 28 V / 5 A);
 - nine stackless coroutines (`APP/app_tasks.c`); the SPI display and every
   hardware-I2C transaction are interrupt driven (DMA1 CH3 page chain, I2C1
   EV/ER + DMA, GX21M15U shares the I2C1 bus with the SW3538);

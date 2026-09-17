@@ -5,6 +5,13 @@
  * Board note: this product supplies OLED VPP externally.  The init sequence
  * deliberately sends 0xAD,0x8A, which keeps the SH1107 internal DC-DC/charge
  * pump disabled.  Do not change 0x8A to the enable form.
+ *
+ * Board note: the panel is reset by an external RC network only.  The ~200 ms
+ * power-up settle wait before the first command is deliberately NOT part of
+ * this driver: the UI thread performs it cooperatively (THRD_DELAY) right
+ * before calling diapInit() - see thread_ui() in app_tasks.c.  A blocking
+ * wait in this init path once starved PD_Task() for 200 ms and caused a 1.2 s
+ * reboot loop when the board was powered over USB-PD.
  */
 #include "u8x8.h"
 

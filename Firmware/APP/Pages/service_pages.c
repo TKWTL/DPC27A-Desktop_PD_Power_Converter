@@ -19,7 +19,7 @@
 
 #include "board.h"
 #include "debug.h"
-#include "fan_control.h"
+#include "Services/fan_control.h"
 #include "core/ui.h"
 #include "display/dispDriver.h"
 

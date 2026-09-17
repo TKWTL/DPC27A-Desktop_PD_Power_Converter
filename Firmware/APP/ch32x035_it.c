@@ -21,6 +21,8 @@ void DMA1_Channel7_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast
 void I2C1_EV_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void I2C1_ER_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void SysTick_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+/* Defined in pd_port.c; declared here for the VTF entry map below. */
+void USBPD_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 
 void NMI_Handler(void)
 {
@@ -92,4 +94,43 @@ void I2C1_ER_IRQHandler(void)
 void SysTick_Handler(void)
 {
     TIME_TickHandler();
+}
+
+/* --------------------------------------------------------------------------
+ * Interrupt policy for the QingKe V4C core (two hardware stack levels).
+ *
+ * Preemption level 0 - USBPD only.  It is the single source that may preempt
+ * another ISR, so the deepest normal nesting is  DMA(n) <- USBPD(0) = two
+ * levels, exactly what the hardware stack supports.
+ * Preemption level 1 - every other peripheral interrupt (SPI/USART/I2C DMA,
+ * I2C EV/ER, SysTick); level-1 handlers never preempt each other.
+ *
+ * IPRIOR layout while nesting is enabled (CSR 0x804 bit1 = 1, set by the
+ * startup file):  bit7 = preemption (0 = high, 1 = low), bit6:5 = sub-priority,
+ * bit4:0 = reserved (keep zero).  Keep this table in sync with the per-
+ * peripheral NVIC_Init() calls - a NEW interrupt must be added here too,
+ * because the reset value (0x00) would otherwise place it at the USBPD level
+ * and degrade the PD response time.
+ * ------------------------------------------------------------------------ */
+void APP_IRQ_Init(void)
+{
+    NVIC_SetPriority(USBPD_IRQn, 0x00u);         /* preemption 0: PD only */
+
+    NVIC_SetPriority(DMA1_Channel3_IRQn, 0xA0u); /* SPI TX   DMA, sub 1 */
+    NVIC_SetPriority(DMA1_Channel4_IRQn, 0xC0u); /* USART TX DMA, sub 2 */
+    NVIC_SetPriority(DMA1_Channel5_IRQn, 0xE0u); /* USART RX DMA, sub 3 */
+    NVIC_SetPriority(DMA1_Channel6_IRQn, 0xA0u); /* I2C TX   DMA, sub 1 */
+    NVIC_SetPriority(DMA1_Channel7_IRQn, 0xA0u); /* I2C RX   DMA, sub 1 */
+    NVIC_SetPriority(I2C1_EV_IRQn,       0x80u); /* I2C events,   sub 0 */
+    NVIC_SetPriority(I2C1_ER_IRQn,       0x80u); /* I2C errors,   sub 0 */
+    NVIC_SetPriority(SysTick_IRQn,       0xE0u); /* 1 ms tick,    sub 3 */
+
+    /* Vector-table-free entries: on acceptance the PFIC jumps straight to the
+     * handler and the vector fetch is skipped.  VTF0..VTF3 are the four VTF
+     * channels of the V4C core; USBPD first, then the three latency-relevant
+     * DMA completions (USART TX, USART RX, SPI TX). */
+    SetVTFIRQ((uint32_t)USBPD_IRQHandler, USBPD_IRQn, 0, ENABLE);
+    SetVTFIRQ((uint32_t)DMA1_Channel4_IRQHandler, DMA1_Channel4_IRQn, 1, ENABLE);
+    SetVTFIRQ((uint32_t)DMA1_Channel5_IRQHandler, DMA1_Channel5_IRQn, 2, ENABLE);
+    SetVTFIRQ((uint32_t)DMA1_Channel3_IRQHandler, DMA1_Channel3_IRQn, 3, ENABLE);
 }

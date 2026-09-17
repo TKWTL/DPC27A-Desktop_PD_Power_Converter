@@ -37,6 +37,15 @@
 *.epro  binary
 *.eprj  binary
 
+# Interactive HTML BOM exports (Hardware/Manufacturing/BOM/*.html) embed the
+# full board data set including images: mark them binary so a checkout keeps
+# them byte-exact and Git does not scan ~17 MB of text on every status/diff.
+Hardware/Manufacturing/BOM/*.html binary
+
+# Captured USB-PD symbol dumps (Firmware/Peripheral/PD/captures/*.txt) are
+# instrument exports: keep them byte-exact and out of text diffs.
+Firmware/Peripheral/PD/captures/*.txt binary
+
 # Archives and mechanical exports that may follow the first manufacturing
 # package (the Gerber *.zip and schematic *.pdf under Hardware/ are already
 # covered by the generic rules above).

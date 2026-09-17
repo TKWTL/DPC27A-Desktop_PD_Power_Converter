@@ -31,3 +31,19 @@ U8g2 (Oliver Kraus) and is distributed under the two-clause BSD license. The
 project keeps only the graphics functions needed by MiaoUI and a project-local
 SH1107 TK078F288 80x128-native display backend. See
 `Firmware/ThirdParty/u8g2/LICENSE`. No upstream u8g2 font collection is linked.
+
+## Protothreads (coroOS scheduler)
+
+The cooperative coroutine scheduler in `Firmware/Project/Scheduler/coroOS.[ch]`
+is derived from the Protothreads library by Adam Dunkels (Swedish Institute of
+Computer Science, 2004-2005). It keeps the Protothreads local-continuation model
+(a `switch` over a stored line number) and extends it into a small scheduler
+using project naming (`CORO_*` / `THRD_*`).
+
+Protothreads are distributed under an open source BSD-style (3-clause BSD)
+license: commercial and non-commercial use, with or without modification, is
+permitted provided that credit is given - the copyright notice and conditions
+must be retained in source redistributions and reproduced in the documentation
+of binary distributions, and the Institute's name may not be used to endorse
+derived products. The full license text is available at
+https://dunkels.com/adam/pt/license.html

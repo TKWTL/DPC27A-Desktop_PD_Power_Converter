@@ -64,9 +64,10 @@ void TIME_Init(void)
     SysTick->CMP = s_cmp_next;
 
     /* Lowest preemption: the 1 ms tick must never delay USB-PD (priority 0) or
-     * any DMA/I2C event handler. */
+     * any DMA/I2C event handler.  0xE0 = preemption 1 + sub 3 (see APP_IRQ_Init
+     * for the full table; IPRIOR bit4:0 are reserved and must stay zero). */
     NVIC_ClearPendingIRQ(SysTick_IRQn);
-    NVIC_SetPriority(SysTick_IRQn, 0xF0u);
+    NVIC_SetPriority(SysTick_IRQn, 0xE0u);
     NVIC_EnableIRQ(SysTick_IRQn);
 
     SysTick->CTLR = STK_CTLR_STE | STK_CTLR_STIE;

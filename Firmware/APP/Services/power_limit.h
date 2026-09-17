@@ -4,7 +4,8 @@
 #include <stdint.h>
 
 /* Total output power budget (W): shown on the dashboard and consumed by the
- * power-allocation pass of thread_power_mirror (APP/app_tasks.c).
+ * power-allocation pass (Services/power_alloc.c, applied by the
+ * thread_power_mirror pass in APP/app_tasks.c).
  *
  * Value rules:
  *   - input below PWR_LIMIT_UVP_MV -> 0 (UVP, the PD state bar shows "UVP");

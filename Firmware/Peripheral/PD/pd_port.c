@@ -178,10 +178,20 @@ void USBPD_IRQHandler(void)
                 {
                     TIME_DelayUs(30u);
 
-                    s_ack_buf[0] = 0x41u;
-                    s_ack_buf[1] =
-                        (uint8_t)((s_rx_buffer[1] & 0x0Eu) |
-                                  s_auto_ack_pr_role);
+                    {
+                        uint8_t rx_revision = (uint8_t)(s_rx_buffer[0] & 0xC0u);
+
+                        /* GoodCRC uses the partner's Message Header revision.
+                         * PD 3.1/3.2 still encode SpecRevision as 10b.  Clamp
+                         * the reserved 11b value to Rev3 for robustness. */
+                        if(rx_revision == 0xC0u)
+                            rx_revision = 0x80u;
+
+                        s_ack_buf[0] = (uint8_t)(PD_PORT_GOODCRC_TYPE | rx_revision);
+                        s_ack_buf[1] =
+                            (uint8_t)((s_rx_buffer[1] & 0x0Eu) |
+                                      s_auto_ack_pr_role);
+                    }
 
                     USBPD->STATUS |= IF_TX_END;
                     USBPD->CONFIG |= IE_TX_END;

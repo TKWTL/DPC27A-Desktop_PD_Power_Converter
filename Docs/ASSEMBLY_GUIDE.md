@@ -17,6 +17,8 @@
     **无元件面板板**,不需要电子 BOM,也不需要贴片定位(坐标)文件;
   - 原理图预览:`Hardware/Preview/SCH_*.pdf`;网表:`Hardware/Preview/Netlist_*.tel`
     (同样只有主板 / 内面板有电气设计);
+  - **交互式 BOM**:`Hardware/Manufacturing/BOM/InteractiveBOM_*.html`(主板 / 内面板,
+    浏览器直接打开);
   - LCEDA Pro 工程:`Hardware/source/ProPrj_*.epro2`。
 
 ## 2. PCB 与电子 BOM
@@ -31,6 +33,10 @@
 | 内面板 | 屏幕/按键面板:OLED + 阻容 + 轻触按键 | SMT 元件(见 CPL) | 需要(`CPL/..._内面板.csv`) |
 | 外面板 | 前面板结构板 | 无 | **不需要** |
 | 背板 | 背面板结构板 | 无 | **不需要** |
+
+> **交互式 BOM**(方便备料/手焊):用浏览器打开 `Hardware/Manufacturing/BOM/` 下的
+> `InteractiveBOM_..._主板.html` / `..._内面板.html`——点击 BOM 行即可在 PCB 图上
+> 高亮定位对应元件,支持旋转/翻面;文件已内嵌全部数据,离线可用。
 
 ![空板](../Images/Assembly/02-bare-pcb.jpg)
 

@@ -206,7 +206,8 @@ void USART1_Async_Init(uint32_t baudrate)
     DMA_Init(USART1_RX_DMA_CH, &dma);
     DMA_ITConfig(USART1_RX_DMA_CH, DMA_IT_TC, ENABLE);
 
-    /* USBPD keeps the default higher priority. UART DMA is deliberately lower. */
+    /* USBPD keeps preemption 0 (see APP_IRQ_Init); UART DMA is deliberately
+     * lower and must match the priority table maintained there. */
     nvic.NVIC_IRQChannel = DMA1_Channel4_IRQn;
     nvic.NVIC_IRQChannelPreemptionPriority = 1u;
     nvic.NVIC_IRQChannelSubPriority = 2u;

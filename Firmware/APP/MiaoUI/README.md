@@ -85,7 +85,7 @@
   - ` Reset Now`:`Board_SoftReset()`(PFIC 软件复位,BOOT_MODE 不动);
   - ` Reboot to ISP`:`Board_RebootToISP()`(下一次复位进入 CH32 出厂 USB ISP);
   - 临时 `Fan Test` 项已于 2026-09-14 删除:风扇改由 `thread_fan` 按
-    `APP/fan_control.c` 的曲线自动调速。
+    `Services/fan_control.c` 的曲线自动调速。
 
 ## 输入约定
 

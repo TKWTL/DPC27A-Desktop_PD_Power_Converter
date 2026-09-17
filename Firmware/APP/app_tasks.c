@@ -2,8 +2,9 @@
 #include "coroOS.h"
 #include "debug.h"
 #include "pd.h"
-#include "power_limit.h"
-#include "fan_control.h"
+#include "Services/power_limit.h"
+#include "Services/power_alloc.h"
+#include "Services/fan_control.h"
 #include "framework/pm_api.h"
 #include "framework/pm_sleep_timer.h"
 #include "board.h"
@@ -96,6 +97,12 @@ THRD_DECLARE(thread_vbus)
 #define UI_KEY_SERVICE_MS          10u
 #define PD_STARTUP_QUIET_WINDOW_MS 1000u
 
+/* The OLED panel is reset by an external RC network only; it must not see its
+ * first command until ~200 ms after power-up.  Waited cooperatively in
+ * thread_ui() before diapInit() - never as a blocking wait, which starves
+ * PD_Task() (see the comment at the call site). */
+#define UI_OLED_SETTLE_MS          200u
+
 /* Ignore key wake-ups for this long after entering UI_OFF: the press that
  * requested the sleep (and its release / DAS events) must not light the
  * screen up again ("manual sleep comes back on immediately"). */
@@ -172,6 +179,19 @@ THRD_DECLARE(thread_ui)
     static uint8_t pm_sleep_seen;
 
     THRD_BEGIN;
+
+    /* The panel is reset by an external RC network only, so it must not see
+     * its first command until ~200 ms after power-up.  The wait happens here,
+     * cooperatively - NOT inside the u8x8 init sequence: diapInit() runs in
+     * this thread's first slice and a blocking 200 ms wait there (TIME_DelayMs
+     * busy-wait) froze the whole cooperative loop.  PD_Task() was starved
+     * right inside the Source_Capabilities response window (~30 ms), the PD
+     * source then cut VBUS and the device reboot-looped every 1.2 s when
+     * powered over USB-PD (reset cause: POR/PDR, GoodCRC failures in the log).
+     * Sleeping here keeps every other thread (PD, telemetry, PM) running
+     * during the settle time. */
+    THRD_DELAY(UI_OLED_SETTLE_MS);
+
     diapInit();
     Key_Init();
     MiaoUi_Setup(&ui);
@@ -298,18 +318,10 @@ THRD_DECLARE(thread_i2c_watchdog)
  *     from scratch on every power-mirror pass.
  * Shares are clamped into the range each SetPowerLimitW() accepts
  * (SW3538 18..140 W, SW3526 12..71 W) and written only when they change. */
-#define PWR_ALLOC_CHIPS       3u
-#define PWR_CAP_SW3538_W    140u
-#define PWR_CAP_SW3526_W     65u
-#define PWR_API_MIN_SW3538_W 18u
-#define PWR_API_MAX_SW3538_W 140u
-#define PWR_API_MIN_SW3526_W 12u
-#define PWR_API_MAX_SW3526_W 71u
-
-static uint8_t s_pwr_alloc_order[PWR_ALLOC_CHIPS];   /* 0 = detached, else attach seq */
-static uint8_t s_pwr_alloc_seq;
-static uint8_t s_pwr_alloc_written[PWR_ALLOC_CHIPS];
-static uint8_t s_pwr_alloc_valid[PWR_ALLOC_CHIPS];
+/* The allocation rules above live in Services/power_alloc.c/.h: PWR_Alloc_Plan()
+ * rebuilds the budget split from the attach flags computed below, and the
+ * PWR_Alloc_ApplyNeeded/Done() pair deduplicates the chip writes performed by
+ * thread_power_mirror below. */
 
 /* SW3526 attach detect: a plain Type-C 5 V sink only powers the port switch
  * (0x07.1 PORT_ON); the protocol-online bit (0x06.7) stays clear until a fast
@@ -336,88 +348,25 @@ static uint8_t app_power_attached(uint8_t chip)
     return app_sw3526_attached(&s_sw3526_2);
 }
 
-static uint8_t app_power_cap_w(uint8_t chip)
+/* ---- Port fast-charge protocol masks requested by the UI -----------------
+ * The MiaoUI protocol pages own the desired mask; this layer only forwards
+ * the latest request to the chip once the switching activity settles, since
+ * a mask write makes an attached sink renegotiate.  The write runs inside
+ * thread_power_mirror so every transfer on a handle stays in one thread. */
+#define PORT_PROTO_DEBOUNCE_MS   800u
+
+static uint32_t s_proto_req_ms[3];
+static uint16_t s_proto_req_mask[3];
+static uint8_t  s_proto_req_pending[3];
+
+void APP_PortProtocol_Touch(uint8_t port, uint16_t mask)
 {
-    return (chip == 0u) ? (uint8_t)PWR_CAP_SW3538_W : (uint8_t)PWR_CAP_SW3526_W;
-}
+    if(port >= 3u)
+        return;
 
-static uint8_t app_power_api_w(uint8_t chip, uint8_t share)
-{
-    uint8_t w = share;
-
-    if(chip == 0u)
-    {
-        if(w > PWR_API_MAX_SW3538_W) w = PWR_API_MAX_SW3538_W;
-        if(w < PWR_API_MIN_SW3538_W) w = PWR_API_MIN_SW3538_W;
-    }
-    else
-    {
-        if(w > PWR_API_MAX_SW3526_W) w = PWR_API_MAX_SW3526_W;
-        if(w < PWR_API_MIN_SW3526_W) w = PWR_API_MIN_SW3526_W;
-    }
-
-    return w;
-}
-
-static uint8_t app_power_apply_needed(uint8_t chip, uint8_t w)
-{
-    if((s_pwr_alloc_valid[chip] != 0u) && (s_pwr_alloc_written[chip] == w))
-        return 0u;
-
-    return 1u;
-}
-
-static void app_power_apply_done(uint8_t chip, uint8_t w)
-{
-    s_pwr_alloc_written[chip] = w;
-    s_pwr_alloc_valid[chip] = 1u;
-}
-
-/* Refresh the attach order and split the budget; pure computation (no I2C). */
-static void app_power_alloc_plan(uint8_t *share)
-{
-    uint32_t remaining = PWR_Limit_GetW();
-    uint8_t first = 0xFFu;
-    uint8_t i;
-
-    for(i = 0u; i < (uint8_t)PWR_ALLOC_CHIPS; i++)
-    {
-        if(app_power_attached(i) != 0u)
-        {
-            if(s_pwr_alloc_order[i] == 0u)
-                s_pwr_alloc_order[i] = (uint8_t)(++s_pwr_alloc_seq);
-        }
-        else
-        {
-            s_pwr_alloc_order[i] = 0u;      /* unplugged: reservation returns */
-        }
-    }
-
-    for(i = 0u; i < (uint8_t)PWR_ALLOC_CHIPS; i++)
-    {
-        if((s_pwr_alloc_order[i] != 0u) &&
-           ((first == 0xFFu) || (s_pwr_alloc_order[i] < s_pwr_alloc_order[first])))
-            first = i;
-    }
-
-    for(i = 0u; i < (uint8_t)PWR_ALLOC_CHIPS; i++)
-        share[i] = 0u;
-
-    if(first != 0xFFu)
-    {
-        share[first] = (app_power_cap_w(first) < remaining) ?
-                       app_power_cap_w(first) : (uint8_t)remaining;
-        remaining -= share[first];
-    }
-
-    for(i = 0u; i < (uint8_t)PWR_ALLOC_CHIPS; i++)
-    {
-        if(i != first)
-        {
-            share[i] = (app_power_cap_w(i) < remaining) ?
-                       app_power_cap_w(i) : (uint8_t)remaining;
-        }
-    }
+    s_proto_req_mask[port] = mask;
+    s_proto_req_ms[port] = TIME_Millis();
+    s_proto_req_pending[port] = 1u;
 }
 
 /* One merged mirror thread: SW3538 (hardware I2C1) and both SW3526s (soft
@@ -448,31 +397,32 @@ THRD_DECLARE(thread_power_mirror)
             if(SW3526_IsOnline(&s_sw3526_2))
                 THRD_SPAWN_ARGS(SW3526_ADCLoad, &s_sw3526_2);
 
-            /* Budget -> per-chip power limits (see the rules above). */
-            app_power_alloc_plan(share);
-            w0 = app_power_api_w(0u, share[0]);
-            w1 = app_power_api_w(1u, share[1]);
-            w2 = app_power_api_w(2u, share[2]);
+            /* Budget -> per-chip power limits (Services/power_alloc.c). */
+            PWR_Alloc_Plan(app_power_attached(0u), app_power_attached(1u),
+                           app_power_attached(2u), share);
+            w0 = PWR_Alloc_ApiW(0u, share[0]);
+            w1 = PWR_Alloc_ApiW(1u, share[1]);
+            w2 = PWR_Alloc_ApiW(2u, share[2]);
             changed = 0u;
 
-            if((app_power_apply_needed(0u, w0) != 0u) && (SW3538_IsOnline(&s_sw3538) != 0u))
+            if((PWR_Alloc_ApplyNeeded(0u, w0) != 0u) && (SW3538_IsOnline(&s_sw3538) != 0u))
             {
                 THRD_SPAWN_ARGS(SW3538_SetPowerLimitW, &s_sw3538, w0);
-                app_power_apply_done(0u, w0);
+                PWR_Alloc_ApplyDone(0u, w0);
                 changed = 1u;
             }
 
-            if((app_power_apply_needed(1u, w1) != 0u) && (SW3526_IsOnline(&s_sw3526_1) != 0u))
+            if((PWR_Alloc_ApplyNeeded(1u, w1) != 0u) && (SW3526_IsOnline(&s_sw3526_1) != 0u))
             {
                 THRD_SPAWN_ARGS(SW3526_SetPowerLimitW, &s_sw3526_1, w1);
-                app_power_apply_done(1u, w1);
+                PWR_Alloc_ApplyDone(1u, w1);
                 changed = 1u;
             }
 
-            if((app_power_apply_needed(2u, w2) != 0u) && (SW3526_IsOnline(&s_sw3526_2) != 0u))
+            if((PWR_Alloc_ApplyNeeded(2u, w2) != 0u) && (SW3526_IsOnline(&s_sw3526_2) != 0u))
             {
                 THRD_SPAWN_ARGS(SW3526_SetPowerLimitW, &s_sw3526_2, w2);
-                app_power_apply_done(2u, w2);
+                PWR_Alloc_ApplyDone(2u, w2);
                 changed = 1u;
             }
 
@@ -481,6 +431,43 @@ THRD_DECLARE(thread_power_mirror)
                 printf("[PWR] budget %lu W -> 3538 %u W / C1 %u W / C2 %u W\r\n",
                        (unsigned long)PWR_Limit_GetW(),
                        (unsigned)w0, (unsigned)w1, (unsigned)w2);
+            }
+
+            /* Debounced port protocol-mask writes requested by the UI. */
+            if((s_proto_req_pending[APP_PORT_PROTO_SW3538] != 0u) &&
+               ((TIME_Millis() - s_proto_req_ms[APP_PORT_PROTO_SW3538]) >=
+                PORT_PROTO_DEBOUNCE_MS) &&
+               (SW3538_IsOnline(&s_sw3538) != 0u))
+            {
+                s_proto_req_pending[APP_PORT_PROTO_SW3538] = 0u;
+                THRD_SPAWN_ARGS(SW3538_SetProtocolMask, &s_sw3538,
+                                (SW3538_ProtocolMask)s_proto_req_mask[APP_PORT_PROTO_SW3538]);
+                printf("[CFG] SW3538 protocol mask 0x%03X\r\n",
+                       (unsigned)s_proto_req_mask[APP_PORT_PROTO_SW3538]);
+            }
+
+            if((s_proto_req_pending[APP_PORT_PROTO_SW3526_1] != 0u) &&
+               ((TIME_Millis() - s_proto_req_ms[APP_PORT_PROTO_SW3526_1]) >=
+                PORT_PROTO_DEBOUNCE_MS) &&
+               (SW3526_IsOnline(&s_sw3526_1) != 0u))
+            {
+                s_proto_req_pending[APP_PORT_PROTO_SW3526_1] = 0u;
+                THRD_SPAWN_ARGS(SW3526_SetProtocolMask, &s_sw3526_1,
+                                (SW3526_ProtocolMask)s_proto_req_mask[APP_PORT_PROTO_SW3526_1]);
+                printf("[CFG] SW3526 C1 protocol mask 0x%03X\r\n",
+                       (unsigned)s_proto_req_mask[APP_PORT_PROTO_SW3526_1]);
+            }
+
+            if((s_proto_req_pending[APP_PORT_PROTO_SW3526_2] != 0u) &&
+               ((TIME_Millis() - s_proto_req_ms[APP_PORT_PROTO_SW3526_2]) >=
+                PORT_PROTO_DEBOUNCE_MS) &&
+               (SW3526_IsOnline(&s_sw3526_2) != 0u))
+            {
+                s_proto_req_pending[APP_PORT_PROTO_SW3526_2] = 0u;
+                THRD_SPAWN_ARGS(SW3526_SetProtocolMask, &s_sw3526_2,
+                                (SW3526_ProtocolMask)s_proto_req_mask[APP_PORT_PROTO_SW3526_2]);
+                printf("[CFG] SW3526 C2 protocol mask 0x%03X\r\n",
+                       (unsigned)s_proto_req_mask[APP_PORT_PROTO_SW3526_2]);
             }
         }
         THRD_DELAY(POWER_MIRROR_POLL_MS);
@@ -705,11 +692,11 @@ void APP_Tasks_Init(void)
     SW3526_HandleInit(&s_sw3526_2, &s_sw3526_bus2);
     printf("Soft-I2C: SW3526#1 PA4/PA3, SW3526#2 PA1/PA2; independent handles\r\n");
 
-    printf("PD Sink: SPR <= %u mV / %u mA; EPR <= %u mV / %u mA\r\n",
-           (unsigned)PD_REQUEST_MAX_FIXED_MV,
-           (unsigned)PD_SPR_REQUEST_MAX_MA,
-           (unsigned)PD_EPR_TARGET_MV,
-           (unsigned)PD_EPR_REQUEST_MAX_MA);
+    printf("PD Sink: SPR <= %u mV; EPR nominal %u mV / %u mA; policy <= %u mA\r\n",
+           (unsigned)PD_SPR_MAX_FIXED_MV,
+           (unsigned)PD_EPR_NOMINAL_MV,
+           (unsigned)PD_NOMINAL_REQUEST_MA,
+           (unsigned)PD_POLICY_REQUEST_MAX_MA);
 
     s_app_boot_ms = TIME_Millis();
     pm_api_init();

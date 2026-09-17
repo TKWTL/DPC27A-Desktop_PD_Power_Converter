@@ -64,7 +64,8 @@ void SPI_DMA_Init(void)
     DMA_DeInit(SPI_DMA_TX_CHANNEL);
     DMA_ClearFlag(SPI_DMA_TX_GL_FLAG);
 
-    /* USBPD keeps the highest priority; display DMA is deliberately lower. */
+    /* USBPD keeps preemption 0 (see APP_IRQ_Init); display DMA is deliberately
+     * lower and must match the priority table maintained there. */
     nvic.NVIC_IRQChannel = DMA1_Channel3_IRQn;
     nvic.NVIC_IRQChannelPreemptionPriority = 1u;
     nvic.NVIC_IRQChannelSubPriority = 1u;

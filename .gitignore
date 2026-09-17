@@ -27,3 +27,6 @@ build/
 Thumbs.db
 *.swp
 *.tmp
+
+# Internal PD debugging notes: kept in the working tree, never published.
+Firmware/Peripheral/PD/pd_snk_debug.md
