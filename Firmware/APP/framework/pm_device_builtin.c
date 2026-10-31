@@ -39,10 +39,19 @@ static const pm_device_node_t s_pm_oled = {
     pm_oled_suspend,
     pm_oled_resume,
     0,
-    10
+    10,
+    0,
+    0
+};
+
+/* MCU owns the last-suspend / first-resume slot. Neither DeepSleep nor
+ * Standby is implemented. USBPD and all coroutines run through UI_OFF. */
+static const pm_device_node_t s_pm_mcu = {
+    "ch32x035", 0, 0, 0, 0, 250, 0, 0
 };
 
 void pm_device_register_builtin(void)
 {
     pm_device_register(&s_pm_oled);
+    pm_device_register(&s_pm_mcu);
 }

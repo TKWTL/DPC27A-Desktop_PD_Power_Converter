@@ -73,6 +73,23 @@ void pm_device_resume_all(void)
     }
 }
 
+/* PB02B-compatible platform entry points; never invoked by UI_OFF policy. */
+void pm_device_enter_deepsleep(void)
+{
+    uint8_t i;
+    for(i=0u;i<s_count;i++)
+        if(s_nodes[i]->on_deepsleep)
+            s_nodes[i]->on_deepsleep(s_nodes[i]->ctx);
+}
+
+void pm_device_enter_standby(void)
+{
+    uint8_t i;
+    for(i=0u;i<s_count;i++)
+        if(s_nodes[i]->on_standby)
+            s_nodes[i]->on_standby(s_nodes[i]->ctx);
+}
+
 __attribute__((weak)) void pm_device_register_linker_set(void)
 {
 }

@@ -108,9 +108,8 @@ void pm_controller_refresh_idle(pm_controller_t *ctx)
     /* External activity -> the UI becomes active again. */
     ctx->ui_active = 1;
     ctx->wake_latched = 1;
-    if (ctx->idle_timer_paused == 0) {
-        pm_sleep_timer_refresh();
-    }
+    /* While paused, refresh restarts the *frozen* remainder. */
+    pm_sleep_timer_refresh();
 }
 
 void pm_controller_pause_idle(pm_controller_t *ctx)
@@ -119,23 +118,19 @@ void pm_controller_pause_idle(pm_controller_t *ctx)
         return;
     }
 
-    ctx->idle_timer_paused = 1;
+    if (ctx->idle_timer_paused == 0) {
+        pm_sleep_timer_pause();
+        ctx->idle_timer_paused = 1;
+    }
 }
 
 void pm_controller_resume_idle(pm_controller_t *ctx)
 {
-    if (ctx == 0) {
-        return;
+    if (ctx != 0 && ctx->idle_timer_paused != 0) {
+        /* Resume from frozen time; do not replace it with a fresh timeout. */
+        pm_sleep_timer_resume();
+        ctx->idle_timer_paused = 0;
     }
-
-    ctx->idle_timer_paused = 0;
-    /* Refresh the idle deadline when a block is released: without this the
-     * deadline has long expired during the block, so the state machine would
-     * sleep the instant the block clears (fixed in the Pocket_PowerBank
-     * framework - the NUEDC original slept as soon as charging/discharging
-     * stopped).  Called once per block-release transition only, so it does
-     * not keep the system awake by itself. */
-    pm_sleep_timer_refresh();
 }
 
 void pm_controller_notify_wake(pm_controller_t *ctx)
