@@ -5,6 +5,7 @@
 #include "Services/power_limit.h"
 #include "Services/power_alloc.h"
 #include "Services/fan_control.h"
+#include "algorithm/port_protocol_algo.h"
 #include "framework/pm_api.h"
 #include "framework/pm_sleep_timer.h"
 #include "board.h"
@@ -360,71 +361,22 @@ static uint8_t app_power_w(uint16_t vout_mv, uint32_t iout_ma_x10)
     return (uint8_t)((w > 255u) ? 255u : w);
 }
 
-/* ---- Port fast-charge protocol masks (UI requests + boot defaults) --------
- * The MiaoUI protocol pages own the desired mask; this layer only forwards
- * the latest request to the chip once the switching activity settles, since
- * a mask write makes an attached sink renegotiate.  APP_Tasks_Init() pushes
- * an "every family enabled" mask through the same path at boot, and the
- * power-mirror pass repeats it whenever a controller returns from offline
- * (see app_proto_reinit_on_edge()), so vendor OTP differences cannot leave
- * protocol functions disabled.  The write runs inside thread_power_mirror so
- * every transfer on a handle stays in one thread. */
-#define PORT_PROTO_DEBOUNCE_MS   800u
-
-static uint32_t s_proto_req_ms[3];
-static uint16_t s_proto_req_mask[3];
-static uint8_t  s_proto_req_pending[3];
-static uint8_t  s_sw3538_paths_pending = 1u;   /* push PT1/PT2 fast charge once per online edge */
-static uint8_t  s_chip_online_prev[3];         /* last pass online state, for the reconnect re-init */
-
-void APP_PortProtocol_Touch(uint8_t port, uint16_t mask)
+/* The algorithm owns mask requests; only this task writes SW35xx devices. */
+void APP_PortProtocol_Touch(uint8_t port,uint16_t mask)
 {
-    if(port >= 3u)
-        return;
-
-    s_proto_req_mask[port] = mask;
-    s_proto_req_ms[port] = TIME_Millis();
-    s_proto_req_pending[port] = 1u;
+    PortProto_AlgoRequest(port,mask,TIME_Millis());
 }
-
-/* Re-apply the boot protocol defaults on every controller offline -> online
- * edge.  A controller that reset falls back to its vendor OTP state, so its
- * all-enabled mask (and, for the SW3538, both fast-charge paths) is pushed
- * again - once per reconnection, through the same debounced writer.  The
- * protocol pages return to the all-enabled baseline as well (single-byte
- * writes, picked up by the next UI frame).  Called once per power-mirror
- * pass, after the status refresh. */
 static void app_proto_reinit_on_edge(void)
 {
-    uint8_t online;
-
-    online = (SW3538_IsOnline(&s_sw3538) != 0u) ? 1u : 0u;
-    if((online != 0u) && (s_chip_online_prev[0] == 0u))
-    {
-        s_sw3538_paths_pending = 1u;
-        APP_PortProtocol_Touch(APP_PORT_PROTO_SW3538,
-                               (uint16_t)SW3538_PROTOCOL_ENABLE_ALL);
-        PortPages_EnableAllProtocols();
-    }
-    s_chip_online_prev[0] = online;
-
-    online = (SW3526_IsOnline(&s_sw3526_1) != 0u) ? 1u : 0u;
-    if((online != 0u) && (s_chip_online_prev[1] == 0u))
-    {
-        APP_PortProtocol_Touch(APP_PORT_PROTO_SW3526_1,
-                               (uint16_t)SW3526_PROTOCOL_ENABLE_ALL);
-        PortPages_EnableAllProtocols();
-    }
-    s_chip_online_prev[1] = online;
-
-    online = (SW3526_IsOnline(&s_sw3526_2) != 0u) ? 1u : 0u;
-    if((online != 0u) && (s_chip_online_prev[2] == 0u))
-    {
-        APP_PortProtocol_Touch(APP_PORT_PROTO_SW3526_2,
-                               (uint16_t)SW3526_PROTOCOL_ENABLE_ALL);
-        PortPages_EnableAllProtocols();
-    }
-    s_chip_online_prev[2] = online;
+    uint32_t now=TIME_Millis();
+    uint8_t reset=0u;
+    reset |= PortProto_AlgoObserve(APP_PORT_PROTO_SW3538,SW3538_IsOnline(&s_sw3538),
+                                   (uint16_t)SW3538_PROTOCOL_ENABLE_ALL,now);
+    reset |= PortProto_AlgoObserve(APP_PORT_PROTO_SW3526_1,SW3526_IsOnline(&s_sw3526_1),
+                                   (uint16_t)SW3526_PROTOCOL_ENABLE_ALL,now);
+    reset |= PortProto_AlgoObserve(APP_PORT_PROTO_SW3526_2,SW3526_IsOnline(&s_sw3526_2),
+                                   (uint16_t)SW3526_PROTOCOL_ENABLE_ALL,now);
+    if(reset) PortPages_EnableAllProtocols();
 }
 
 /* One merged mirror thread: SW3538 (hardware I2C1) and both SW3526s (soft
@@ -437,6 +389,7 @@ THRD_DECLARE(thread_power_mirror)
     static uint8_t w1;
     static uint8_t w2;
     static uint8_t changed;
+    static uint16_t proto_mask[PORT_PROTO_ALGO_PORTS];
 
     THRD_BEGIN;
     THRD_DELAY(POLL_PHASE_POWER_MS);
@@ -508,51 +461,33 @@ THRD_DECLARE(thread_power_mirror)
                        (unsigned)w0, (unsigned)w1, (unsigned)w2);
             }
 
-            /* Debounced port protocol-mask writes requested by the UI. */
-            if((s_proto_req_pending[APP_PORT_PROTO_SW3538] != 0u) &&
-               ((TIME_Millis() - s_proto_req_ms[APP_PORT_PROTO_SW3538]) >=
-                PORT_PROTO_DEBOUNCE_MS) &&
-               (SW3538_IsOnline(&s_sw3538) != 0u))
+            /* Only the coroutine issues I2C writes. These static masks
+             * survive every THRD_SPAWN_ARGS yield. */
+            if(PortProto_AlgoTakeDue(APP_PORT_PROTO_SW3538,SW3538_IsOnline(&s_sw3538),
+                                      TIME_Millis(),&proto_mask[0]))
             {
-                s_proto_req_pending[APP_PORT_PROTO_SW3538] = 0u;
-                THRD_SPAWN_ARGS(SW3538_SetProtocolMask, &s_sw3538,
-                                (SW3538_ProtocolMask)s_proto_req_mask[APP_PORT_PROTO_SW3538]);
-                printf("[CFG] SW3538 protocol mask 0x%03X\r\n",
-                       (unsigned)s_proto_req_mask[APP_PORT_PROTO_SW3538]);
+                THRD_SPAWN_ARGS(SW3538_SetProtocolMask,&s_sw3538,
+                                (SW3538_ProtocolMask)proto_mask[0]);
+                printf("[CFG] SW3538 protocol mask 0x%03X\r\n",(unsigned)proto_mask[0]);
             }
-
-            if((s_proto_req_pending[APP_PORT_PROTO_SW3526_1] != 0u) &&
-               ((TIME_Millis() - s_proto_req_ms[APP_PORT_PROTO_SW3526_1]) >=
-                PORT_PROTO_DEBOUNCE_MS) &&
-               (SW3526_IsOnline(&s_sw3526_1) != 0u))
+            if(PortProto_AlgoTakeDue(APP_PORT_PROTO_SW3526_1,SW3526_IsOnline(&s_sw3526_1),
+                                      TIME_Millis(),&proto_mask[1]))
             {
-                s_proto_req_pending[APP_PORT_PROTO_SW3526_1] = 0u;
-                THRD_SPAWN_ARGS(SW3526_SetProtocolMask, &s_sw3526_1,
-                                (SW3526_ProtocolMask)s_proto_req_mask[APP_PORT_PROTO_SW3526_1]);
-                printf("[CFG] SW3526 C1 protocol mask 0x%03X\r\n",
-                       (unsigned)s_proto_req_mask[APP_PORT_PROTO_SW3526_1]);
+                THRD_SPAWN_ARGS(SW3526_SetProtocolMask,&s_sw3526_1,
+                                (SW3526_ProtocolMask)proto_mask[1]);
+                printf("[CFG] SW3526 C1 protocol mask 0x%03X\r\n",(unsigned)proto_mask[1]);
             }
-
-            if((s_proto_req_pending[APP_PORT_PROTO_SW3526_2] != 0u) &&
-               ((TIME_Millis() - s_proto_req_ms[APP_PORT_PROTO_SW3526_2]) >=
-                PORT_PROTO_DEBOUNCE_MS) &&
-               (SW3526_IsOnline(&s_sw3526_2) != 0u))
+            if(PortProto_AlgoTakeDue(APP_PORT_PROTO_SW3526_2,SW3526_IsOnline(&s_sw3526_2),
+                                      TIME_Millis(),&proto_mask[2]))
             {
-                s_proto_req_pending[APP_PORT_PROTO_SW3526_2] = 0u;
-                THRD_SPAWN_ARGS(SW3526_SetProtocolMask, &s_sw3526_2,
-                                (SW3526_ProtocolMask)s_proto_req_mask[APP_PORT_PROTO_SW3526_2]);
-                printf("[CFG] SW3526 C2 protocol mask 0x%03X\r\n",
-                       (unsigned)s_proto_req_mask[APP_PORT_PROTO_SW3526_2]);
+                THRD_SPAWN_ARGS(SW3526_SetProtocolMask,&s_sw3526_2,
+                                (SW3526_ProtocolMask)proto_mask[2]);
+                printf("[CFG] SW3526 C2 protocol mask 0x%03X\r\n",(unsigned)proto_mask[2]);
             }
-
-            /* Boot default, once: enable both SW3538 fast-charge paths (the
-             * UI has no switch for these bits and vendor OTP may ship them
-             * disabled). */
-            if((s_sw3538_paths_pending != 0u) && (SW3538_IsOnline(&s_sw3538) != 0u))
+            if(PortProto_AlgoTakePaths(SW3538_IsOnline(&s_sw3538)))
             {
-                s_sw3538_paths_pending = 0u;
-                THRD_SPAWN_ARGS(SW3538_SetPortFastChargeEnabled, &s_sw3538, 1u, 1u);
-                THRD_SPAWN_ARGS(SW3538_SetPortFastChargeEnabled, &s_sw3538, 2u, 1u);
+                THRD_SPAWN_ARGS(SW3538_SetPortFastChargeEnabled,&s_sw3538,1u,1u);
+                THRD_SPAWN_ARGS(SW3538_SetPortFastChargeEnabled,&s_sw3538,2u,1u);
                 printf("[CFG] SW3538 fast-charge paths: PT1+PT2 enabled\r\n");
             }
         }
@@ -784,8 +719,8 @@ void APP_Tasks_Init(void)
      * defaults are re-applied whenever a controller returns from offline
      * (app_proto_reinit_on_edge() in thread_power_mirror): a reset chip falls
      * back to its OTP state, so every reconnection gets one fresh push
-     * through the debounced writer.  That thread also enables both SW3538
-     * fast-charge paths on those edges (see s_sw3538_paths_pending). */
+     * through the debounced writer. Fast-charge paths are also restored on
+     * reconnect through the integer-only port protocol algorithm. */
     PortPages_EnableAllProtocols();
     APP_PortProtocol_Touch(APP_PORT_PROTO_SW3538, (uint16_t)SW3538_PROTOCOL_ENABLE_ALL);
     APP_PortProtocol_Touch(APP_PORT_PROTO_SW3526_1, (uint16_t)SW3526_PROTOCOL_ENABLE_ALL);

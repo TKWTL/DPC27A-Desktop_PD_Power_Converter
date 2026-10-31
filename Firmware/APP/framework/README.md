@@ -1,54 +1,23 @@
-# 低功耗框架(`APP/framework`)
+# DPC27A PM sync (PB02B reference)
 
-> 职责:提供电源状态机与 **UI_OFF** 休眠等级——无操作超时后关闭 OLED 并暂停 UI 绘制,
-> 按键 / 插拔事件 / 输出功率活动将其唤醒;PD、遥测、风扇等其余线程不受影响。
+**PM_MAX_SLEEP_DEPTH remains PM_SLEEP_DEPTH_UI_OFF.** UI_OFF only powers off
+the OLED and stops MiaoUI rendering. USBPD, I2C, telemetry, fan, coroOS and the
+CH32X035 MCU must keep running.
 
-## 来源与适配(2026-09-14 逐一对比后移植)
+- Nonzero sleep block mask freezes the remaining timer, instead of hiding
+  an expired deadline. All blockers must clear before the countdown resumes.
+- A real input/output activity during blocking refreshes the frozen remainder
+  to the full timeout. Without activity, 60 s minus 20 s = 40 s after unblock.
+- No Auto Sleep and manual force are independent; force survives UI_OFF until
+  wake and is cleared then, keeping existing wake-key suppression.
+- TIME_Millis() 32-bit comparisons are wrap-safe for timeouts under 2^31 ms.
+- PM registers OLED (order 10) and CH32X035 MCU (order 250). PB02B-style
+  on_deepsleep/on_standby fields are placeholders: no MCU sleep entry exists.
+- APP/algorithm/port_protocol_algo implements 800 ms mask debounce,
+  offline-pending writes, reconnect defaults and SW3538 fast-charge path flags.
+  The power-mirror coroutine remains the only SW35xx driver writer.
+- APP/Services fan and power policy modules already avoid direct driver writes
+  and remain unchanged.
 
-核心与两个同源工程逐文件对比过(git diff):
-
-| 来源 | 取用内容 |
-|---|---|
-| `Pocket_PowerBank\firmware\Applications\framework` | **修复后的核心**:`pm_controller_resume_idle()` 的定时器刷新(否则阻塞解除瞬间就入睡)、`pm_sleep_timer` 重写(disable/force 旗标、64 位防溢出换算) |
-| `NUEDC_2025B\Firmware_0\APP\framework` | **MiaoUI 接口**(`pm_ui_register.c` 的 Sleep 单选菜单)与 **UI_OFF 模式**(关屏而非深睡、任意键唤醒、唤醒后 ~100ms 按键静默) |
-
-本工程适配:
-
-- 无 FreeRTOS:`pm_sleep_timer` 改用 `TIME_Millis()`(32 位环绕安全比较),无临界区(单核协作式);
-- `PM_MAX_SLEEP_DEPTH = PM_SLEEP_DEPTH_UI_OFF`:只启用 UI_OFF;深睡状态保留在枚举里备用;
-- **force 旗标保持到 UI_OFF→RUN 的唤醒瞬间才清除**:参考工程在 DEEPSLEEP/STANDBY 分支清除,
-  本工程不可达;若提前清,"No Auto Sleep + 手动休眠"会在下一轮弹回 RUN;
-- 未移植深睡专用机制(唤醒数据预取门闩、睡眠总线门控、总线互斥锁判空)。
-
-## 文件
-
-| 文件 | 说明 |
-|---|---|
-| `pm_policy.c/.h` | 状态机(与两个参考工程逐字一致,仅默认深度不同) |
-| `pm_controller.c/.h` | 状态机驱动 + 转换钩子(Pocket 版含 `resume_idle` 修复) |
-| `pm_device.c/.h` | 设备钩子注册表(prepare/suspend/resume,按 `order` 排序) |
-| `pm_sleep_timer.c/.h` | 空闲倒计时(No Auto Sleep = `disable()`;手动休眠 = `force_expire()`) |
-| `pm_api.c/.h` | 应用接口:`pm_api_poll()/refresh_idle()/force_sleep()/set_sleep_timeout()/ui_should_block()` |
-| `pm_device_builtin.c` | OLED 钩子:UI_OFF 关屏(`Disp_SetPowerSave(1)`)、唤醒亮屏 + 重绘 |
-| `pm_ui_register.c/.h` | MiaoUI:设置页 `-Sleep`(紧随菜单项)→ `[Sleep]` 页(9 档超时单选);主菜单立即休眠改为**根菜单长按 K2=UI_BACK → `pm_api_force_sleep()`**(`core/ui.c`;旧 `-Sleep` 图标已删) |
-
-## 行为
-
-- 上电默认 **1 分钟**无操作进入 UI_OFF(菜单可改;掉电不保存,同两个参考工程);
-- 唤醒源:任意键 / PD·VBUS·端口插拔边沿 / 输出总功率 **>5 W**(均在 `thread_pm` 扫描);
-- 进入 UI_OFF 只是关 OLED + 暂停 `ui_loop()`(见 `thread_ui` 分支):PD、500ms 遥测、风扇照常;
-- 唤醒瞬间 ~100 ms 忽略按键(唤醒键本身也被吞,不会连带触发菜单);
-- `thread_pm` 以 50 ms 周期调用 `pm_api_poll()` 推进状态机(初始相位 200 ms)。
-
-## 接口速查
-
-见 `pm_api.h`。新增受管设备:实现 prepare/suspend/resume 钩子后在
-`pm_device_register_builtin()` 注册(或覆盖弱符号 `pm_device_register_linker_set()`)。
-
-## 注意事项
-
-- **深睡未启用**:继续往下移植需实现 CH32X035 的睡眠入口/唤醒源,并把 `PM_MAX_SLEEP_DEPTH`
-  提升到 DEEPSLEEP,同时补回唤醒预取与总线门控(参考 Pocket 工程);
-- 睡眠设置(超时档位)不持久化;
-- 若将来使用 `pm_api_set_sleep_block()` 的阻塞位:块解除时 `pm_controller_resume_idle()` 会刷新
-  倒计时(这正是 Pocket 修的那个 bug),不会"解除即入睡"。
+Host C regressions: from Firmware/ run 'sh Tests/host/run.sh'.
+Hardware tests must still cover UI wake, PD timing, controller reinitialization.
