@@ -164,3 +164,11 @@ GPIO 恢复过程从不主动拉高 SCL/SDA,依靠板上的 I2C 上拉电阻完�
 5. **刻意不修改** I²C 时钟(400 kHz)、RX DMA `LAST`/ACK、错误中断、I²C 看门狗、总线恢复算法、两器件驱动及 `DPC_DIAGNOSTICS_ENABLE` 默认值；这些改动限定在 TX DMA 中断交接与 STOP→START 合法间隔。
 
 **验证状态：尚未板端实测**。应从本提交执行 Clean Build，先将 `DPC_DIAGNOSTICS_ENABLE=0` 连续运行至少 5 分钟，无负载与大功率分别观察 `--`/离线；随后在相同供电条件下对照 `=1`。若仍出现 `0` 独有异常，不得继续用调试日志来隐式延时，应采用低开销的 RAM 错误计数或调试器读取 `I2C_API_RESULT_*`、DMA6/7 TC/TE 和 EV 风暴统计区分 NACK、TX BTF、RX DMA 与看门狗。若需深入定位，优先对照逻辑分析仪的 SCL/SDA/STOP→START 时序。
+
+## 2026-11-14：日志分组后的后续验证
+
+用户再次复测确认：即使加入 TX DMA EV 屏蔽、重复 START 的 `SB` 握手和 STOP→START 的 `tBUF` 检查，精简诊断构建仍出现 SW3538 / GX21M15U 间歇离线，详细诊断开启后则恢复正常。这说明前述修订不构成问题已解决的证据。
+
+此轮仅拆分 `Firmware/APP/main.h` 的日志编译开关，默认保留启动信息、功率分配更改和风扇档位更改打印；详细 VBUS/PM、I²C 现场快照及两行恢复记录依旧由 `DPC_DIAGNOSTICS_ENABLE`（默认 0）控制。日志开关的完整说明已统一放到 [`Firmware/README.md`](../../README.md)。
+
+**注意**：默认保留的三个日志组不足以复制此前 `DPC_DIAGNOSTICS_ENABLE=1` 的全部打印时序；默认构建是否消除离线仍需用户实测。后续应优先设计不经 UART 的错误计数/锁存，避免用日志延迟掩盖中断竞争或状态机问题。

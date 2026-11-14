@@ -7,12 +7,26 @@ extern "C" {
 
 #include "ch32x035.h"
 
-/* Production: 0 strips optional UART logs and I2C fault register snapshots,
- * saving Flash and RAM. Set to 1 for a temporary diagnostic build.
- * Changing this requires a clean rebuild of all dependent translation units. */
-#define DPC_DIAGNOSTICS_ENABLE       0
+/* Compile-time logging policy. The three operational logs below remain
+ * enabled even in the lean (DPC_DIAGNOSTICS_ENABLE=0) configuration.
+ * The detailed option only owns optional VBUS/PM, I2C fault snapshots,
+ * OLED-ready and CFG debug messages. All changes require a Clean Build. */
+#define DPC_DIAGNOSTICS_ENABLE       0  /* Detailed diagnostics (default off) */
+#define DPC_LOG_STARTUP_ENABLE       1  /* Startup identity, reset, buses, PD */
+#define DPC_LOG_POWER_ALLOC_ENABLE   1  /* Only when applied power limits change */
+#define DPC_LOG_FAN_CHANGE_ENABLE    1  /* Only when fan PWM duty changes */
+
 #if (DPC_DIAGNOSTICS_ENABLE != 0) && (DPC_DIAGNOSTICS_ENABLE != 1)
 #error "DPC_DIAGNOSTICS_ENABLE must be 0 or 1"
+#endif
+#if (DPC_LOG_STARTUP_ENABLE != 0) && (DPC_LOG_STARTUP_ENABLE != 1)
+#error "DPC_LOG_STARTUP_ENABLE must be 0 or 1"
+#endif
+#if (DPC_LOG_POWER_ALLOC_ENABLE != 0) && (DPC_LOG_POWER_ALLOC_ENABLE != 1)
+#error "DPC_LOG_POWER_ALLOC_ENABLE must be 0 or 1"
+#endif
+#if (DPC_LOG_FAN_CHANGE_ENABLE != 0) && (DPC_LOG_FAN_CHANGE_ENABLE != 1)
+#error "DPC_LOG_FAN_CHANGE_ENABLE must be 0 or 1"
 #endif
 
 /*

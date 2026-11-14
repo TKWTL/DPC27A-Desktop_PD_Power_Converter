@@ -38,7 +38,7 @@ ui_t ui;
 
 static void APP_PrintResetCause(void)
 {
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_STARTUP_ENABLE
     uint8_t any = 0u;
     printf("[RESET] cause:");
     if(RCC_GetFlagStatus(RCC_FLAG_PORRST) != RESET) { printf(" POR/PDR"); any = 1u; }
@@ -463,7 +463,7 @@ THRD_DECLARE(thread_power_mirror)
     static uint8_t w0;
     static uint8_t w1;
     static uint8_t w2;
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_POWER_ALLOC_ENABLE
     static uint8_t changed;
 #endif
 
@@ -507,7 +507,7 @@ THRD_DECLARE(thread_power_mirror)
             w0 = PWR_Alloc_ApiW(0u, share[0]);
             w1 = PWR_Alloc_ApiW(1u, share[1]);
             w2 = PWR_Alloc_ApiW(2u, share[2]);
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_POWER_ALLOC_ENABLE
             changed = 0u;
 #endif
 
@@ -515,7 +515,7 @@ THRD_DECLARE(thread_power_mirror)
             {
                 THRD_SPAWN_ARGS(SW3538_SetPowerLimitW, &s_sw3538, w0);
                 PWR_Alloc_ApplyDone(0u, w0);
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_POWER_ALLOC_ENABLE
                 changed = 1u;
 #endif
             }
@@ -524,7 +524,7 @@ THRD_DECLARE(thread_power_mirror)
             {
                 THRD_SPAWN_ARGS(SW3526_SetPowerLimitW, &s_sw3526_1, w1);
                 PWR_Alloc_ApplyDone(1u, w1);
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_POWER_ALLOC_ENABLE
                 changed = 1u;
 #endif
             }
@@ -533,12 +533,12 @@ THRD_DECLARE(thread_power_mirror)
             {
                 THRD_SPAWN_ARGS(SW3526_SetPowerLimitW, &s_sw3526_2, w2);
                 PWR_Alloc_ApplyDone(2u, w2);
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_POWER_ALLOC_ENABLE
                 changed = 1u;
 #endif
             }
 
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_POWER_ALLOC_ENABLE
             if(changed != 0u)
             {
                 printf("[PWR] budget %lu W -> 3538 %u W / C1 %u W / C2 %u W\r\n",
@@ -678,7 +678,7 @@ THRD_DECLARE(thread_fan)
             applied = pwm;
             applied_valid = 1u;
             FAN_PWM_SetDuty8(pwm);
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_FAN_CHANGE_ENABLE
             printf("[FAN] %dC online=%u uvp=%u -> pwm %u\r\n",
                    (int)temp_c, (unsigned)online, (unsigned)uvp, (unsigned)pwm);
 #endif
@@ -819,11 +819,11 @@ static coro_pt_t s_thread_states[sizeof(s_threads) / sizeof(s_threads[0])];
 
 void APP_Tasks_Init(void)
 {
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_STARTUP_ENABLE
     printf("\r\n=== Desktop PD Power Converter / CH32X035C8T6 ===\r\n");
 #endif
     APP_PrintResetCause();
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_STARTUP_ENABLE
     printf("SystemClk:%lu Hz ChipID:%08lx\r\n",
            (unsigned long)SystemCoreClock, (unsigned long)DBGMCU_GetCHIPID());
     printf("UART1: PB10 TX / PB11 RX @ 921600, DMA async\r\n");
@@ -841,7 +841,7 @@ void APP_Tasks_Init(void)
     I2C_API_Init(I2C_API_DEFAULT_CLOCK_HZ);
     SW3538_HandleInit(&s_sw3538, I2C_API_OWNER_SW3538);
     GX21M15_HandleInit(&s_gx21m15, I2C_API_OWNER_GX21M15U, GX21M15_I2C_ADDR_DEFAULT);
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_STARTUP_ENABLE
     printf("I2C1: PA13 SCL / PA14 SDA @ %lu Hz, EV/ER + TX/RX DMA IRQ; SW3538 + GX21M15 ready\r\n",
            (unsigned long)I2C_API_GetClockHz());
 #endif
@@ -863,7 +863,7 @@ void APP_Tasks_Init(void)
     s_sw3526_bus2.stretch_timeout_us = SOFT_I2C_DEFAULT_STRETCH_TIMEOUT_US;
     SoftI2C_Init(&s_sw3526_bus2);
     SW3526_HandleInit(&s_sw3526_2, &s_sw3526_bus2);
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_STARTUP_ENABLE
     printf("Soft-I2C: SW3526#1 PA4/PA3, SW3526#2 PA1/PA2; independent handles\r\n");
 #endif
 
@@ -880,7 +880,7 @@ void APP_Tasks_Init(void)
     APP_PortProtocol_Touch(APP_PORT_PROTO_SW3526_1, (uint16_t)SW3526_PROTOCOL_ENABLE_ALL);
     APP_PortProtocol_Touch(APP_PORT_PROTO_SW3526_2, (uint16_t)SW3526_PROTOCOL_ENABLE_ALL);
 
-#if DPC_DIAGNOSTICS_ENABLE
+#if DPC_LOG_STARTUP_ENABLE
     printf("PD Sink: SPR <= %u mV; EPR nominal %u mV / %u mA; policy <= %u mA\r\n",
            (unsigned)PD_SPR_MAX_FIXED_MV,
            (unsigned)PD_EPR_NOMINAL_MV,
