@@ -9,6 +9,11 @@
 #define I2C_API_ERROR_MASK            (I2C_STAR1_AF | I2C_STAR1_BERR | I2C_STAR1_ARLO | I2C_STAR1_OVR)
 #define I2C_API_BUS_RECOVERY_PULSE_US 5u
 #define I2C_API_BUS_FREE_SPIN_US      250u
+/* CH32X035 Fast I2C specifies tBUF (STOP->START) >= 1.2 us.
+ * Two microseconds after BUSY clears gives a bounded compliant margin. */
+#define I2C_API_BUS_FREE_MIN_US       2u
+/* Repeated START must assert SB before BTF-triggered EV IRQs are enabled. */
+#define I2C_API_RESTART_SPIN_US       250u
 
 /* 事件中断风暴熔断值：同一状态连续被 EV 中断打断超过该次数就强制中止。
  * （正常一条事务的状态切换都伴随 set_state()，绝不会连续同状态打断。） */
@@ -295,6 +300,13 @@ static uint8_t wait_bus_free(void)
         ++elapsed_us;
     }
 
+    if(I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY) != RESET)
+        return 0u;
+
+    /* BUSY=0 is not itself a guarantee that the I2C Fast-mode STOP->START
+     * minimum bus-free period has elapsed. This is a protocol requirement,
+     * not a debug-dependent delay; recheck BUSY in case of external activity. */
+    TIME_DelayUs(I2C_API_BUS_FREE_MIN_US);
     return (I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY) == RESET) ? 1u : 0u;
 }
 
@@ -703,6 +715,12 @@ void I2C_API_EV_IRQHandler(void)
     {
         if(s_xfer.state == I2C_API_STATE_WAIT_ADDR_TX)
         {
+            /* BTF can assert I2C1_EV even with ITBUFEN=0. The TX byte phase
+             * belongs to DMA1 CH6, not EV, exactly like RX belongs to CH7.
+             * Mask EVT before releasing ADDR, while retaining ERR interrupts.
+             * CH6 will re-enable EVT only after the repeated START has SB. */
+            if(s_xfer.tx_len != 0u)
+                I2C_ITConfig(I2C1, (uint16_t)I2C_IT_EVT, DISABLE);
             clear_addr_flag();
 
             if(s_xfer.tx_len != 0u)
@@ -838,11 +856,35 @@ void I2C_API_TxDMA_IRQHandler(void)
     while(((I2C1->STAR1 & I2C_STAR1_BTF) == 0u) && guard)
         --guard;
 
+    /* DMA TC only means DATAR was loaded, not that the last bit/ACK left
+     * the wire. Never start another transfer or report success without BTF. */
+    if((I2C1->STAR1 & I2C_STAR1_BTF) == 0u)
+    {
+        finish(I2C_API_RESULT_TIMEOUT, I2C_API_ERR_TX_BTF, 1u);
+        return;
+    }
+
     if(s_xfer.rx_len != 0u)
     {
-        I2C_ITConfig(I2C1, (uint16_t)I2C_IT_EVT, ENABLE);
-        I2C_GenerateSTART(I2C1, ENABLE);
+        uint32_t start_ticks;
+        uint32_t max_ticks = TIME_UsToTicks(I2C_API_RESTART_SPIN_US);
+
+        /* With TX BTF still set, enabling EVT before START/SB recreates a
+         * stale-BTF interrupt storm. Arm START with EVT masked; wait for the
+         * hardware SB flag before granting the address phase to EV. */
         set_state(I2C_API_STATE_WAIT_START_RX);
+        start_ticks = TIME_Ticks32();
+        I2C_GenerateSTART(I2C1, ENABLE);
+        while(((I2C1->STAR1 & I2C_STAR1_SB) == 0u) &&
+              ((uint32_t)(TIME_Ticks32() - start_ticks) < max_ticks))
+        {
+        }
+        if((I2C1->STAR1 & I2C_STAR1_SB) == 0u)
+        {
+            finish(I2C_API_RESULT_TIMEOUT, I2C_API_ERR_START_RX, 1u);
+            return;
+        }
+        I2C_ITConfig(I2C1, (uint16_t)I2C_IT_EVT, ENABLE);
     }
     else
     {
@@ -894,7 +936,9 @@ void I2C_API_WatchdogService(uint32_t now_ms)
         {
             /* Rare deferred start: the bus was still busy when the caller
              * requested the transaction and no event interrupt will come. */
-            if(i2c_prepare_start())
+            /* Deferred BUSY recovery must obey the same tBUF check as
+             * begin(), rather than bypassing it on this watchdog path. */
+            if(wait_bus_free() && i2c_prepare_start())
                 start_transaction();
         }
     }

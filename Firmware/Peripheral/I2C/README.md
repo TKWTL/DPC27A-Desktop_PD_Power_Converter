@@ -150,3 +150,17 @@ GPIO 恢复过程从不主动拉高 SCL/SDA,依靠板上的 I2C 上拉电阻完�
 - **修订**：两个入口都**无条件按 `STAR1→STAR2` 读取**，且发生在 DMA/STOP 清理之前；诊断版额外锁存寄存器、DMA 和引脚数据，精简版不保留扩展快照。保留 EV 事件中断交接修复、原有 TX/RX/ACK/LAST、看门狗和总线恢复。对 `STAR1/STAR2` 这类带副作用的外设寄存器，不允许用 `#if DPC_DIAGNOSTICS_ENABLE` 直接包围其必需访问。
 - **验证状态**：仅源代码审查，尚无用户对修订版的硬件验证。应对相同提交分别 Clean Build `0`、`1`，在无负载及 5 分钟连续大功率条件下比较离线次数；若 `0` 仍有间歇离线，需要进一步捕获 DMA/事件标志与中断延迟，检查是否仍有时序敏感性。
 
+
+## 2026-11-14：诊断关闭后仍间歇掉线——TX DMA 中断所有权与 tBUF
+
+**复测反馈**：前一提交将 `finish()` / `i2c_abort_event_storm()` 的 `STAR1→STAR2` 读取统一到诊断开/关两种构建后，**`DPC_DIAGNOSTICS_ENABLE=0` 下 SW3538、GX21M15U 间歇离线的问题依旧**。因此“仅因状态寄存器读取被条件编译删除”并不能解释全部现象；之前的修复不得标为已实测成功。
+
+本次基于当前源码与 CH32X035 应用手册（I²C 中断请求 / 主发送器 / BTF 定义）发现：
+
+1. 原 `WAIT_ADDR_TX` 清除 `ADDR` 后启动 DMA1 CH6，**没有关闭 `I2C_IT_EVT`**。然而即使 `ITBUFEN=0`，`BTF=1` 依旧能由 `ITEVTEN` 产生 EV 中断。DMA TC6 与 BTF/EV 若时序接近，就可能重现此前 RX DMA 的事件风暴/完成中断被抢先处理的问题。这条路径由 GX21M15U 和 SW3538 的寄存器读取共同使用。
+2. 原 `I2C_API_TxDMA_IRQHandler()` 在请求重复 START **之前**重新使能 EV；此时发送尾端 `BTF` 可能尚未被硬件清掉。修订为：在 TX `ADDR` 阶段关 EV、完成 DMA6 后等待 `BTF`，先设 `WAIT_START_RX`，发 START，**确认 SB 已置位后才重新开放 EV**；`ERR` 中断与 DMA TC/TE 保持启用。SB 等待使用最多 250 µs 的硬件计时器上限，超时走既有恢复。
+3. 原 TX DMA 的 `BTF` 有界等待耗尽后没有检查结果，也可能在发送尚未结束时误认为成功并发 STOP/重复 START。现在若 `BTF` 未到，就返回 `I2C_API_ERR_TX_BTF` / `TIMEOUT` 并请求恢复。
+4. 在 400 kHz Fast I²C 中，CH32X035 数据手册给出 STOP 到下一次 START 的 `tBUF` 最小约 **1.2 µs**。原 `wait_bus_free()` 仅检查 `BUSY=0`，没有显式保证间隔。现在总线空闲后额外等待 **2 µs** 并复查 BUSY；它是 I²C 标准时序要求而非为诊断版增加的偶然延迟。
+5. **刻意不修改** I²C 时钟(400 kHz)、RX DMA `LAST`/ACK、错误中断、I²C 看门狗、总线恢复算法、两器件驱动及 `DPC_DIAGNOSTICS_ENABLE` 默认值；这些改动限定在 TX DMA 中断交接与 STOP→START 合法间隔。
+
+**验证状态：尚未板端实测**。应从本提交执行 Clean Build，先将 `DPC_DIAGNOSTICS_ENABLE=0` 连续运行至少 5 分钟，无负载与大功率分别观察 `--`/离线；随后在相同供电条件下对照 `=1`。若仍出现 `0` 独有异常，不得继续用调试日志来隐式延时，应采用低开销的 RAM 错误计数或调试器读取 `I2C_API_RESULT_*`、DMA6/7 TC/TE 和 EV 风暴统计区分 NACK、TX BTF、RX DMA 与看门狗。若需深入定位，优先对照逻辑分析仪的 SCL/SDA/STOP→START 时序。
