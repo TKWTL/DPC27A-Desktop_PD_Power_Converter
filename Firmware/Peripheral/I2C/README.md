@@ -172,3 +172,15 @@ GPIO 恢复过程从不主动拉高 SCL/SDA,依靠板上的 I2C 上拉电阻完�
 此轮仅拆分 `Firmware/APP/main.h` 的日志编译开关，默认保留启动信息、功率分配更改和风扇档位更改打印；详细 VBUS/PM、I²C 现场快照及两行恢复记录依旧由 `DPC_DIAGNOSTICS_ENABLE`（默认 0）控制。日志开关的完整说明已统一放到 [`Firmware/README.md`](../../README.md)。
 
 **注意**：默认保留的三个日志组不足以复制此前 `DPC_DIAGNOSTICS_ENABLE=1` 的全部打印时序；默认构建是否消除离线仍需用户实测。后续应优先设计不经 UART 的错误计数/锁存，避免用日志延迟掩盖中断竞争或状态机问题。
+
+## 2026-11-14：独立实验开关 + 首次失败不可变锁存
+
+反馈表明：`DPC_DIAGNOSTICS_ENABLE` 只要设为 `0`，两路硬件 I²C 镜像仍不稳定，而 `=1` 可保持正常。现在不再盲改 TX/RX DMA 时序，采用二因素对照来确认差异。
+
+- `DPC_I2C_SNAPSHOT_ACTIVE = DPC_DIAGNOSTICS_ENABLE || DPC_DIAG_I2C_SNAPSHOT_ENABLE`。单独开后，`i2c_api.c` 将保留原诊断版的 `s_last_*` 更新、DMA/寄存器现场获取、故障计数等逻辑，却不强制前台串口输出。**注意**：在所有正常事务结束时更新 `s_last_star1/s_last_star2` 也是指令级时序差异。
+- `DPC_VBUS_PM_LOG_ACTIVE = DPC_DIAGNOSTICS_ENABLE || DPC_DIAG_VBUS_PM_ENABLE`。单独开后，仅恢复 `thread_vbus` 中每秒 VBUS 与 PM 的格式化/串口输出；不启用 ISR 扩展快照。
+- `DPC_I2C_FIRST_FAULT_TRACE_ENABLE` 默认 `1`：当 `finish()` 第一次返回非 `I2C_API_ERR_NONE`（包括 NACK）或触发 EV 风暴熔断时，在清理总线前仅锁存**第一笔失败**的 owner、状态、错误/结果、STAR1、STAR2、CTLR2、DMA6/7 剩余量、DMA 标志及时间。之后不覆盖，故障信息不会被后续自动恢复掩盖。看门狗协程之后仅报告一次两行 `[I2C0]`，不在 ISR 中打印。
+
+实验 A/B/C/D/E 参数和错误编号说明见 [`Firmware/README.md`](../../README.md)。按相同运行条件，每个配置独立 Clean Build。首次失败以外不记录，因此若第一笔发生在初始化阶段的预期暂时 NACK，需结合时间戳与用例判断。**该记录本身仍会改变故障发生时的局部执行时长，不应当作零扰动测量。**
+
+本轮无目标编译器和板上实测，问题尚无确定根因。发布固件时应将 `DPC_I2C_FIRST_FAULT_TRACE_ENABLE=0` 以去掉这套临时诊断。
