@@ -34,6 +34,18 @@ static volatile uint16_t s_last_star1;
 static volatile uint16_t s_last_star2;
 static volatile uint8_t s_recovery_requested;
 static volatile uint32_t s_recovery_count;
+/* Fault-site snapshot survives DMA shutdown and I2C1 peripheral reset. */
+static volatile I2C_API_RecoveryCause s_fault_cause;
+static volatile I2C_API_State s_fault_state;
+static volatile I2C_API_Owner s_fault_owner;
+static volatile I2C_API_Result s_fault_result;
+static volatile uint8_t s_fault_addr;
+static volatile uint16_t s_fault_tx_len, s_fault_rx_len;
+static volatile uint16_t s_fault_tx_cnt, s_fault_rx_cnt;
+static volatile uint16_t s_fault_ctlr2;
+static volatile uint32_t s_fault_dma_rx_cfgr, s_fault_dma_intfr;
+static volatile uint32_t s_fault_age_ms;
+static volatile uint8_t s_fault_scl, s_fault_sda;
 
 /*
  * The watchdog measures inactivity in the current hardware state, not total
@@ -110,11 +122,30 @@ static void i2c_hw_init(void)
     DMA_ClearFlag(DMA1_FLAG_GL6 | DMA1_FLAG_GL7);
 }
 
-static void snapshot(I2C_API_Error error)
+static void snapshot(I2C_API_Error error, I2C_API_RecoveryCause cause,
+                     I2C_API_Result result)
 {
+    /* Do not read DATAR or log inside IRQs; retain the unmodified register
+     * scene before STOP/DMA cleanup, including on event-storm aborts. */
     s_last_error = error;
+    s_fault_cause = cause;
+    s_fault_state = s_xfer.state;
+    s_fault_owner = s_xfer.owner;
+    s_fault_result = result;
+    s_fault_addr = s_xfer.address_7bit;
+    s_fault_tx_len = s_xfer.tx_len;
+    s_fault_rx_len = s_xfer.rx_len;
     s_last_star1 = I2C1->STAR1;
     s_last_star2 = I2C1->STAR2;
+    s_fault_ctlr2 = I2C1->CTLR2;
+    s_fault_tx_cnt = (uint16_t)DMA_GetCurrDataCounter(I2C_API_DMA_TX_CHANNEL);
+    s_fault_rx_cnt = (uint16_t)DMA_GetCurrDataCounter(I2C_API_DMA_RX_CHANNEL);
+    s_fault_dma_rx_cfgr = I2C_API_DMA_RX_CHANNEL->CFGR;
+    s_fault_dma_intfr = DMA1->INTFR;
+    s_fault_scl = GPIO_ReadInputDataBit(PWR_I2C_SCL_GPIO_Port, PWR_I2C_SCL_Pin) ? 1u : 0u;
+    s_fault_sda = GPIO_ReadInputDataBit(PWR_I2C_SDA_GPIO_Port, PWR_I2C_SDA_Pin) ? 1u : 0u;
+    s_fault_age_ms = (s_xfer.result == I2C_API_RESULT_ACTIVE) ?
+                     (uint32_t)(TIME_Millis() - s_xfer.last_progress_ms) : 0u;
 }
 
 static void clear_i2c_error_flags(void)
@@ -183,7 +214,14 @@ static void finish(I2C_API_Result result, I2C_API_Error error, uint8_t request_r
      * status registers.  In particular, reading STAR2 can clear ADDR after a
      * STAR1 read, so snapshot first when diagnosing a timeout. */
     if(error != I2C_API_ERR_NONE)
-        snapshot(error);
+    {
+        I2C_API_RecoveryCause cause = I2C_API_RECOVERY_I2C_ERROR;
+        if(result == I2C_API_RESULT_TIMEOUT)
+            cause = I2C_API_RECOVERY_TIMEOUT;
+        else if((error == I2C_API_ERR_TX_DMA) || (error == I2C_API_ERR_RX_DMA))
+            cause = I2C_API_RECOVERY_DMA_ERROR;
+        snapshot(error, cause, result);
+    }
     else
     {
         s_last_error = I2C_API_ERR_NONE;
@@ -457,6 +495,7 @@ void I2C_API_Init(uint32_t clock_hz)
     s_recovery_requested = 0u;
     s_recovery_count = 0u;
     s_last_error = I2C_API_ERR_NONE;
+    s_fault_cause = I2C_API_RECOVERY_NONE;
     i2c_hw_init();
 
     /* Event/error and both DMA channels carry the transaction; only the
@@ -533,7 +572,11 @@ uint8_t I2C_API_TryWriteRead(I2C_API_Owner owner,
  * 最后表现为“停在某页 → IWDG 复位”。 */
 static void i2c_abort_event_storm(I2C_API_Error error)
 {
-    uint16_t star2 = I2C1->STAR2;
+    uint16_t star2;
+
+    /* Capture DMA channel and I2C registers before stop_dma() clears them. */
+    snapshot(error, I2C_API_RECOVERY_EVENT_STORM, I2C_API_RESULT_TIMEOUT);
+    star2 = s_last_star2;
 
     I2C_ITConfig(I2C1, (uint16_t)(I2C_IT_EVT | I2C_IT_BUF | I2C_IT_ERR), DISABLE);
     stop_dma();
@@ -546,7 +589,6 @@ static void i2c_abort_event_storm(I2C_API_Error error)
 
     if(s_xfer.result == I2C_API_RESULT_ACTIVE)
     {
-        snapshot(error);
         s_xfer.state = I2C_API_STATE_IDLE;
         s_xfer.result = I2C_API_RESULT_TIMEOUT;
     }
@@ -897,16 +939,25 @@ void I2C_API_GetDiagnostic(I2C_API_Diagnostic *diag)
         return;
 
     diag->error = s_last_error;
-    diag->state = s_xfer.state;
-    diag->owner = s_xfer.owner;
-    diag->result = s_xfer.result;
+    diag->state = s_fault_state;
+    diag->owner = s_fault_owner;
+    diag->result = s_fault_result;
     diag->star1 = s_last_star1;
     diag->star2 = s_last_star2;
-    diag->dma_tx_remaining = DMA_GetCurrDataCounter(I2C_API_DMA_TX_CHANNEL);
-    diag->dma_rx_remaining = DMA_GetCurrDataCounter(I2C_API_DMA_RX_CHANNEL);
+    diag->dma_tx_remaining = s_fault_tx_cnt;
+    diag->dma_rx_remaining = s_fault_rx_cnt;
+    /* These two pins are read after recovery, for comparison only. */
     diag->scl_high = GPIO_ReadInputDataBit(PWR_I2C_SCL_GPIO_Port, PWR_I2C_SCL_Pin) ? 1u : 0u;
     diag->sda_high = GPIO_ReadInputDataBit(PWR_I2C_SDA_GPIO_Port, PWR_I2C_SDA_Pin) ? 1u : 0u;
-    diag->transaction_age_ms = (s_xfer.result == I2C_API_RESULT_ACTIVE) ?
-                               (uint32_t)(TIME_Millis() - s_xfer.last_progress_ms) : 0u;
+    diag->transaction_age_ms = s_fault_age_ms;
     diag->recovery_count = s_recovery_count;
+    diag->cause = s_fault_cause;
+    diag->address_7bit = s_fault_addr;
+    diag->tx_len = s_fault_tx_len;
+    diag->rx_len = s_fault_rx_len;
+    diag->i2c_ctlr2 = s_fault_ctlr2;
+    diag->dma_rx_cfgr = s_fault_dma_rx_cfgr;
+    diag->dma_intfr = s_fault_dma_intfr;
+    diag->fault_scl_high = s_fault_scl;
+    diag->fault_sda_high = s_fault_sda;
 }

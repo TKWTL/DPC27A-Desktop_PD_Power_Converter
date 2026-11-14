@@ -61,6 +61,16 @@ typedef enum
     I2C_API_STATE_WAIT_RX_SINGLE
 } I2C_API_State;
 
+/* Event source recorded before cleanup, never inferred from post-recovery pins. */
+typedef enum
+{
+    I2C_API_RECOVERY_NONE = 0,
+    I2C_API_RECOVERY_TIMEOUT = 1,
+    I2C_API_RECOVERY_EVENT_STORM = 2,
+    I2C_API_RECOVERY_DMA_ERROR = 3,
+    I2C_API_RECOVERY_I2C_ERROR = 4
+} I2C_API_RecoveryCause;
+
 typedef struct
 {
     I2C_API_Error error;
@@ -75,6 +85,16 @@ typedef struct
     uint8_t sda_high;
     uint32_t transaction_age_ms;
     uint32_t recovery_count;
+    /* All fields below are latched before DMA/I2C is stopped. */
+    I2C_API_RecoveryCause cause;
+    uint8_t address_7bit;
+    uint16_t tx_len;
+    uint16_t rx_len;
+    uint16_t i2c_ctlr2;
+    uint32_t dma_rx_cfgr;
+    uint32_t dma_intfr;
+    uint8_t fault_scl_high;
+    uint8_t fault_sda_high;
 } I2C_API_Diagnostic;
 
 /*

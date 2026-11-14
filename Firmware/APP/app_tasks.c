@@ -245,7 +245,7 @@ THRD_DECLARE(thread_ui)
 
             if(((uint32_t)(now_ms - pm_sleep_ms) >= PM_WAKE_ARM_MS) &&
                (app_pm_wake_key_pressed() != 0u))
-                pm_api_refresh_idle();
+                pm_api_wake_from_activity();
 
             ui.action = UI_ACTION_NONE;
         }
@@ -293,9 +293,18 @@ THRD_DECLARE(thread_i2c_watchdog)
         {
             last_recovery_count = I2C_API_GetRecoveryCount();
             I2C_API_GetDiagnostic(&d);
-            printf("[I2C] recovery #%lu: %s SCL=%u SDA=%u STAR1=0x%04x STAR2=0x%04x\r\n",
+            /* The fault snapshot is taken before DMA/I2C shutdown, whereas
+             * post-recovery SCL/SDA are sampled in GetDiagnostic(). */
+            printf("[I2C] rec#%lu %s cause=%u owner=%u addr=%02x st=%u S1=%04x S2=%04x\r\n",
                    (unsigned long)last_recovery_count, I2C_API_GetLastErrorName(),
-                   d.scl_high, d.sda_high, d.star1, d.star2);
+                   (unsigned)d.cause, (unsigned)d.owner, (unsigned)d.address_7bit,
+                   (unsigned)d.state, (unsigned)d.star1, (unsigned)d.star2);
+            printf("[I2C] pre=%u/%u post=%u/%u rx=%u left=%u cf7=%08lx if=%08lx c2=%04x age=%lu\r\n",
+                   (unsigned)d.fault_scl_high, (unsigned)d.fault_sda_high,
+                   (unsigned)d.scl_high, (unsigned)d.sda_high,
+                   (unsigned)d.rx_len, (unsigned)d.dma_rx_remaining,
+                   (unsigned long)d.dma_rx_cfgr, (unsigned long)d.dma_intfr,
+                   (unsigned)d.i2c_ctlr2, (unsigned long)d.transaction_age_ms);
         }
     }
     THRD_END;
@@ -651,6 +660,9 @@ THRD_DECLARE(thread_fan)
 #define PM_POLL_MS            50u
 #define POLL_PHASE_PM_MS     200u
 #define PM_ACTIVITY_POWER_MW 5000u
+/* 2 W accumulated step filters measurement noise; 5 W crossings always wake.
+ * A steady >5 W output blocks automatic sleep but must not wake UI_OFF. */
+#define PM_ACTIVITY_WAKE_DELTA_MW 2000u
 
 /* Total output power from the 333 ms power mirrors (same integer math as the
  * dashboard: SW3538 column = shared VOUT x both port currents). */
@@ -700,22 +712,51 @@ THRD_DECLARE(thread_pm)
     static uint8_t sig;
     static uint8_t sig_valid;
     static uint8_t now_sig;
+    static uint8_t power_valid;
+    static uint8_t above_threshold;
+    static uint32_t power_mw;
+    static uint32_t power_reference_mw;
+    static uint32_t power_diff_mw;
 
     THRD_BEGIN;
     THRD_DELAY(POLL_PHASE_PM_MS);
     while(1)
     {
         now_sig = app_power_activity_signature();
-        if((sig_valid == 0u) || (now_sig != sig))
+        if(sig_valid == 0u)
         {
             sig = now_sig;
             sig_valid = 1u;
-            pm_api_refresh_idle();
+            pm_api_refresh_idle(); /* baseline, not an edge */
+        }
+        else if(now_sig != sig)
+        {
+            sig = now_sig;
+            pm_api_wake_from_activity(); /* PD/VBUS/port attach or detach */
         }
 
-        if(app_output_power_mw() > PM_ACTIVITY_POWER_MW)
-            pm_api_refresh_idle();
+        power_mw = app_output_power_mw();
+        above_threshold = (power_mw > PM_ACTIVITY_POWER_MW) ? 1u : 0u;
+        if(power_valid == 0u)
+        {
+            power_reference_mw = power_mw;
+            power_valid = 1u;
+        }
+        else
+        {
+            power_diff_mw = (power_mw >= power_reference_mw) ?
+                            (power_mw - power_reference_mw) :
+                            (power_reference_mw - power_mw);
+            if(((power_mw > PM_ACTIVITY_POWER_MW) !=
+                (power_reference_mw > PM_ACTIVITY_POWER_MW)) ||
+               (power_diff_mw >= PM_ACTIVITY_WAKE_DELTA_MW))
+            {
+                power_reference_mw = power_mw;
+                pm_api_wake_from_activity(); /* actual load step */
+            }
+        }
 
+        pm_api_set_sleep_block(PM_BLOCK_OUTPUT_POWER, above_threshold);
         pm_api_poll();
         THRD_DELAY(PM_POLL_MS);
     }

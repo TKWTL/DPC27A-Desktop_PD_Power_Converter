@@ -50,5 +50,14 @@
 - **深睡未启用**:继续往下移植需实现 CH32X035 的睡眠入口/唤醒源,并把 `PM_MAX_SLEEP_DEPTH`
   提升到 DEEPSLEEP,同时补回唤醒预取与总线门控(参考 Pocket 工程);
 - 睡眠设置(超时档位)不持久化;
-- 若将来使用 `pm_api_set_sleep_block()` 的阻塞位:块解除时 `pm_controller_resume_idle()` 会刷新
-  倒计时(这正是 Pocket 修的那个 bug),不会"解除即入睡"。
+- `PM_BLOCK_OUTPUT_POWER` 激活时会冻结倒计时；块解除时 `pm_controller_resume_idle()` 从冻结的剩余时间继续，避免"解除即入睡"，而不是把时间重新置满。
+
+
+## 2026-11-14：同步 IH01A 的冻结倒计时与手动休眠修复
+
+- 移植 [IH01A](https://github.com/TKWTL/IH01A-Compact_Induction_Heater) 的 `pm_sleep_timer.c/.h`、`pm_controller.c` 和 `pm_api.c` 修复：`PM_BLOCK_OUTPUT_POWER` 在测量输出功率 **>5 W** 时冻结倒计时，解除时从冻结的剩余时间继续，而不在归零后才阻止休眠。
+- 根菜单长按 BACK 仍可执行 `pm_api_force_sleep()`，即使启用了 No Auto Sleep 或当前输出功率超过 5 W，也可进入 UI_OFF；普通持续功率采样不解除手动关屏。强制休眠立即运行一次 `pm_api_poll()`，不等待下一个 50 ms tick。
+- **与 IH01A 不同：保留功率事件唤醒。** 按键新按下（沿用 UI_OFF 后 300 ms 防反弹）、PD/VBUS/输出端口插拔变化、输出功率跨越 5 W 门槛或相对上一次显著变化点累计变化至少 2 W，均通过 `pm_api_wake_from_activity()` 唤醒。高于 5 W 的**稳定输出**本身只冻结倒计时，不会每 50 ms 将手动关屏重新唤醒。为了降低遥测抖动对亮屏的影响，2 W 是本轮诊断固件的工程阈值，可依实测再调整。
+- 屏幕只是 UI_OFF，PD 任务、SW3538/SW3526 轮询、风扇和 I²C 故障恢复不停止；未启用深度睡眠。
+- **后续中文化参照 IH01A：** `Firmware/APP/MiaoUI/fonts/font_fusion_pixel_12_zh.c`（Fusion Pixel 12px，OFL）、`fonts/LICENSE-OFL`、UTF-8 文字宽度测量及菜单高亮布局；但 DPC27A 是 128×80 屏且 Flash 紧张，本次不导入字库或翻译。
+- 本提交暂未用 MounRiver Studio II 编译、烧录或实测。
