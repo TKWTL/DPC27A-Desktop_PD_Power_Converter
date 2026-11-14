@@ -127,7 +127,7 @@ static void i2c_hw_init(void)
 
 #if DPC_DIAGNOSTICS_ENABLE
 static void snapshot(I2C_API_Error error, I2C_API_RecoveryCause cause,
-                     I2C_API_Result result)
+                     I2C_API_Result result, uint16_t star1, uint16_t star2)
 {
     /* Do not read DATAR or log inside IRQs; retain the unmodified register
      * scene before STOP/DMA cleanup, including on event-storm aborts. */
@@ -139,8 +139,8 @@ static void snapshot(I2C_API_Error error, I2C_API_RecoveryCause cause,
     s_fault_addr = s_xfer.address_7bit;
     s_fault_tx_len = s_xfer.tx_len;
     s_fault_rx_len = s_xfer.rx_len;
-    s_last_star1 = I2C1->STAR1;
-    s_last_star2 = I2C1->STAR2;
+    s_last_star1 = star1;
+    s_last_star2 = star2;
     s_fault_ctlr2 = I2C1->CTLR2;
     s_fault_tx_cnt = (uint16_t)DMA_GetCurrDataCounter(I2C_API_DMA_TX_CHANNEL);
     s_fault_rx_cnt = (uint16_t)DMA_GetCurrDataCounter(I2C_API_DMA_RX_CHANNEL);
@@ -215,8 +215,17 @@ static uint8_t i2c_prepare_start(void)
 
 static void finish(I2C_API_Result result, I2C_API_Error error, uint8_t request_recovery)
 {
+    /* STAR1 -> STAR2 is a hardware operation, not pure instrumentation:
+     * on this I2C peripheral the read sequence clears ADDR and related
+     * pending events. Previously these reads were compiled out in
+     * production builds, changing behavior along with ISR timing; this is
+     * a credible cause of the observed intermittent offline indicators,
+     * but requires an A/B hardware retest. Keep the reads in BOTH builds,
+     * before disabling DMA / generating STOP. */
+    uint16_t star1 = I2C1->STAR1;
+    uint16_t star2 = I2C1->STAR2;
+
 #if DPC_DIAGNOSTICS_ENABLE
-    /* Capture hardware state before STOP/DMA cleanup changes status registers. */
     if(error != I2C_API_ERR_NONE)
     {
         I2C_API_RecoveryCause cause = I2C_API_RECOVERY_I2C_ERROR;
@@ -224,16 +233,18 @@ static void finish(I2C_API_Result result, I2C_API_Error error, uint8_t request_r
             cause = I2C_API_RECOVERY_TIMEOUT;
         else if((error == I2C_API_ERR_TX_DMA) || (error == I2C_API_ERR_RX_DMA))
             cause = I2C_API_RECOVERY_DMA_ERROR;
-        snapshot(error, cause, result);
+        snapshot(error, cause, result, star1, star2);
     }
     else
     {
         s_last_error = I2C_API_ERR_NONE;
-        s_last_star1 = I2C1->STAR1;
-        s_last_star2 = I2C1->STAR2;
+        s_last_star1 = star1;
+        s_last_star2 = star2;
     }
 #else
-    (void)error;  /* The transactional result and recovery request remain. */
+    (void)error; /* Error classification omitted, not hardware maintenance. */
+    (void)star1;
+    (void)star2;
 #endif
 
     stop_dma();
@@ -587,15 +598,17 @@ uint8_t I2C_API_TryWriteRead(I2C_API_Owner owner,
  * 最后表现为“停在某页 → IWDG 复位”。 */
 static void i2c_abort_event_storm(I2C_API_Error error)
 {
-    uint16_t star2;
+    /* Preserve the same ordered status-register read sequence in both
+     * builds; do not make fault recovery depend on a logging option. */
+    uint16_t star1 = I2C1->STAR1;
+    uint16_t star2 = I2C1->STAR2;
 
 #if DPC_DIAGNOSTICS_ENABLE
-    /* Keep fault-time capture available in dedicated diagnostic builds. */
-    snapshot(error, I2C_API_RECOVERY_EVENT_STORM, I2C_API_RESULT_TIMEOUT);
-    star2 = s_last_star2;
+    snapshot(error, I2C_API_RECOVERY_EVENT_STORM,
+             I2C_API_RESULT_TIMEOUT, star1, star2);
 #else
     (void)error;
-    star2 = I2C1->STAR2;
+    (void)star1;
 #endif
 
     I2C_ITConfig(I2C1, (uint16_t)(I2C_IT_EVT | I2C_IT_BUF | I2C_IT_ERR), DISABLE);

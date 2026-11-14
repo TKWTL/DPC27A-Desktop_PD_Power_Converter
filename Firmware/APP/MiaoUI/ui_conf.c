@@ -25,6 +25,7 @@ static ui_item_t s_statistics_item;
 static ui_item_t s_statistics_back_item;
 static ui_item_t s_stats_pdo_item, s_stats_req_item, s_stats_current_item, s_stats_vbus_item;
 static ui_item_t s_settings_item;
+static ui_item_t s_settings_icons_back_item;
 static ui_item_t s_settings_detail_item;
 static ui_item_t s_settings_back_item;
 static ui_item_t s_about_item;
@@ -126,7 +127,24 @@ void Create_MenuTree(ui_t *ui)
     AddItem("-Dashboard", UI_ITEM_WORD, img_dashboard,
             &s_dashboard_item, &s_main_page, 0, Dashboard_Page);
 
-    /* IH01A-style root Statistics tile immediately before Settings. */
+    /* Settings icon submenu: Return/Home, TypeA+C, TypeC1, TypeC2, Settings.
+     * Both Settings tiers share one constant img_configuration bitmap. */
+    AddItem("-Settings", UI_ITEM_PARENTS, img_configuration,
+            &s_settings_item, &s_main_page, &s_settings_icons_page, 0);
+        AddPage("[Settings]", &s_settings_icons_page, UI_PAGE_ICON, &s_main_page);
+        AddItem("[Menu]", UI_ITEM_RETURN, img_home,
+                &s_settings_icons_back_item, &s_settings_icons_page, &s_main_page, 0);
+        Add_Port_Items(&s_settings_icons_page);
+        AddItem("-Settings", UI_ITEM_PARENTS, img_configuration,
+                &s_settings_detail_item, &s_settings_icons_page, &s_settings_page, 0);
+            AddPage("[Settings]", &s_settings_page, UI_PAGE_TEXT, &s_settings_icons_page);
+            AddItem("[Return]", UI_ITEM_RETURN, 0,
+                    &s_settings_back_item, &s_settings_page, &s_settings_icons_page, 0);
+            PM_UI_AddSleepSettingsItems(&s_settings_page);
+            Add_Disp_Items(&s_settings_page);
+            Add_Service_Items(&s_settings_page);
+
+    /* Root Statistics follows Settings; PD and VBUS are read-only rows. */
     AddItem("-Statistics", UI_ITEM_PARENTS, img_statistics,
             &s_statistics_item, &s_main_page, &s_statistics_page, 0);
         AddPage("[Statistics]", &s_statistics_page, UI_PAGE_TEXT, &s_main_page);
@@ -141,22 +159,6 @@ void Create_MenuTree(ui_t *ui)
                 &s_statistics_page, 0, statistics_readonly);
         AddItem(s_stats_vbus, UI_ITEM_WORD, 0, &s_stats_vbus_item,
                 &s_statistics_page, 0, statistics_readonly);
-
-    /* Icon submenu: TypeA+C, TypeC1, TypeC2, and Settings. The root and
-     * nested Settings use the exact same img_configuration bitmap in Flash.
-     * Long BACK from this icon page returns to the main icon menu. */
-    AddItem("-Settings", UI_ITEM_PARENTS, img_configuration,
-            &s_settings_item, &s_main_page, &s_settings_icons_page, 0);
-        AddPage("[Settings]", &s_settings_icons_page, UI_PAGE_ICON, &s_main_page);
-        Add_Port_Items(&s_settings_icons_page);
-        AddItem("-Settings", UI_ITEM_PARENTS, img_configuration,
-                &s_settings_detail_item, &s_settings_icons_page, &s_settings_page, 0);
-            AddPage("[Settings]", &s_settings_page, UI_PAGE_TEXT, &s_settings_icons_page);
-            AddItem("[Return]", UI_ITEM_RETURN, 0,
-                    &s_settings_back_item, &s_settings_page, &s_settings_icons_page, 0);
-            PM_UI_AddSleepSettingsItems(&s_settings_page);
-            Add_Disp_Items(&s_settings_page);
-            Add_Service_Items(&s_settings_page);
 
     AddItem("-Burn-in Test", UI_ITEM_WORD, img_burn_in,
             &s_burnin_item, &s_main_page, 0, Burnin_Page);

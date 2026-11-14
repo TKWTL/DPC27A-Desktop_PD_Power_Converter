@@ -8,7 +8,7 @@
 APP/                 入口、任务注册 + MiaoUI + 页面函数
   Services/          输出侧策略模块:总功率限制(`power_limit.c/.h`)、功率分配(`power_alloc.c/.h`)、风扇曲线(`fan_control.c/.h`)
   framework/         低功耗状态机与 UI_OFF 休眠(`pm_*.c/.h`,含 Sleep 菜单)
-  MiaoUI/            精简菜单/UI 移植,单字体 + XBM 图标(仪表盘/设置/关于/烧屏/休眠/恐龙)
+  MiaoUI/            精简菜单/UI 移植,单字体 + XBM 图标(仪表盘/Settings 子页/Statistics/关于/烧屏/恐龙)
   Pages/             页面函数(Dashboard 仪表盘、`port_pages.c` 端口协议页、服务页、`game_dinosaur.c` 小游戏)
 BSP/                 板级启动 + 器件驱动
   SW3538/            硬件 I2C 双口快充控制器驱动
@@ -57,7 +57,7 @@ Project/obj/         构建产物(除 `.gitkeep` 外被忽略)
 > Source 的 ~24 ms 窗口内;实测 1 ms 休眠粒度会把 5 ms 拉长到 ~31 ms,Source 直接不回 GoodCRC)。
 >
 > 看门狗:`APP_Tasks_Init()` 末尾使能 IWDG(LSI,约 1–3 s),仅在 `APP_Tasks_Idle()` 每轮刷新;
-> 卡死后的整机复位可以从下次启动的 `[RESET] cause: … IWDG` 确认。
+> 诊断构建(`DPC_DIAGNOSTICS_ENABLE=1`)可从下次启动的 `[RESET] cause: … IWDG` 确认卡死复位；默认精简构建不输出该行。
 
 ## 中断与 VTF
 
@@ -105,8 +105,11 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
   帧按 page 分批发运,像素数据传输期间不会长时间占住前台调度器。
 - MiaoUI 保留剪裁窗口、圆角矩形/框、XBM 图片、圆/线图元和文本渲染;
   当前只链接 `font_menu_main_h12w6` 一个字体。
-- 首屏是 **Dashboard 仪表盘函数页**(见下),图标菜单含 dashboard/设置/三个端口协议页
-  (TypeA+C/TypeC1/TypeC2,`APP/Pages/port_pages.c`)/烧屏测试/小恐龙/关于,
+- 首屏是 **Dashboard 仪表盘函数页**(见下)。主图标菜单顺序为
+  Dashboard / Settings / Statistics / Burn-in Test / Dino Game / About；
+  Settings 图标子菜单首项是 `img_home` 返回上级，后面依次为 TypeA+C、TypeC1、TypeC2
+  (`APP/Pages/port_pages.c`)与第二层 Settings（进入原文字设置页），两层 Settings 共用
+  `img_configuration`；Statistics 提供 PD 申请档位、请求电压/电流、VBUS 实测值。
   仪表盘与其它全屏页一样都只是被菜单调用的绘制函数;仪表盘上导航键
   被忽略,按 K2(ENTER,松开触发)返回图标菜单,长按 K2=BACK 同样返回。
   K1=DOWN,K2=ENTER(长按=BACK:子页回上级、根菜单立即休眠),两路 GPIO 使用内部
@@ -162,6 +165,28 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
   `kp/ki/kd` 也按 Q10 填（0.25 → 256）。
 - 改完请用 map 复核：库占用（`_`/`__` 开头符号）应只剩 `_write`/`_sbrk` 与少量
   libgcc 移位辅助。
+
+
+## 诊断输出预编译开关（2026-11-14）
+
+唯一开关位于 [`APP/main.h`](APP/main.h)，默认是 **0**：
+
+```c
+#define DPC_DIAGNOSTICS_ENABLE       0
+```
+
+临时排障时将同一处宏改为 `1`，然后执行 **Clean Build**（必须重新编译 `APP/app_tasks.c`、`Peripheral/I2C/i2c_api.c` 及所有引用该宏的文件）。不要同时定义两遍。
+
+| 取值 | 编译行为 |
+|---|---|
+| `0` | 剔除 `APP/app_tasks.c` 的启动/复位原因、每秒 VBUS/PM、I²C 两行现场、功率分配、配置与风扇调试打印；`i2c_api.c` 的故障寄存器扩展快照及相关诊断接口不参与编译 |
+| `1` | 启用上述临时调试输出与 I²C 现场快照（`cause/owner/state/STAR1/STAR2/CTLR2/DMA7` 等） |
+
+该开关**不是全固件的串口静音总开关**：PD 协议后端、复位执行页等其它模块的日志，若未单独受此宏包围，仍可能输出。发布版的代码和 RAM/Flash 缩减量以对应 `.map` 文件为准，不预估具体节省数字。
+
+**关键约束：不要将带硬件副作用的寄存器操作隐藏到诊断宏中。** CH32X035 I²C 的 `STAR1 → STAR2` 顺序读取会影响 `ADDR` 等标志的清除。2026-11-14 曾出现 `DPC_DIAGNOSTICS_ENABLE=0` 时 SW3538 与 GX21M15U 偶发离线，而 `=1` 时正常的实测差异。代码检查发现旧版 `finish()` 的该读取只存在于诊断分支，事件风暴熔断分支的读取顺序也不一致。本次修订将收尾与熔断前的寄存器读取统一为两种构建均执行，诊断宏只决定是否保存扩展快照。**这是针对构建差异的有根据修正，尚未经过用户复测，不能宣布已解决**。详见 [`Peripheral/I2C/README.md`](Peripheral/I2C/README.md)。
+
+验证应对同一源代码使用 Clean Build 分别编译 `0` 与 `1`，至少覆盖无负载和连续大功率，观察 SW3538/GX21M15U 在线状态和温度是否出现 `---`/`--.-C`；若仅 `0` 仍失败，应继续检查编译布局/中断时序/状态机，不以添加任意延时替代定位。
 
 ## 模块文档
 

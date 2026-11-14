@@ -110,8 +110,8 @@ Dashboard 页内 K1 被忽略,按 K2(短按)返回图标菜单,长按同样返�
 
 沿用 IH01A `Firmware/APP/MiaoUI/ui_conf.c` 的静态 `ui_page_t/ui_item_t`、`AddItem` 后立即 `AddPage` 的深度优先菜单注册风格，不引入动态分配。
 
-- 主图标页依次包括 Dashboard、**Statistics**、Settings、Burn-in Test、Dino Game、About；Statistics 位于 Settings 入口之前。
-- 主 Settings (`UI_PAGE_ICON`) 包含 TypeA+C、TypeC1、TypeC2 与第二层 Settings。两级 Settings **复用同一个** `img_configuration` 常量，不复制位图。第二层进入原先的 `UI_PAGE_TEXT` 设置页（Sleep、Display、Fan/Reset/ISP）。
+- 主图标页依次包括 Dashboard、**Settings**、Statistics、Burn-in Test、Dino Game、About；Settings 位于 Statistics 前。
+- 主 Settings (`UI_PAGE_ICON`) 首位为 `[Menu]` 返回图标，使用已有 `img_home`；其后依次为 TypeA+C、TypeC1、TypeC2 与第二层 Settings。两级 Settings **复用同一个** `img_configuration` 常量，不复制位图。第二层进入原先的 `UI_PAGE_TEXT` 设置页（Sleep、Display、Fan/Reset/ISP）。
 - 三个端口设置页面的返回指向 Settings 图标页；文本设置页返回同样指向该页。图标页使用现有 BACK 操作返回上一级；根菜单 BACK→手动关屏行为不变。
 - Statistics (`UI_PAGE_TEXT`) 采用 IH01A 的 `img_statistics` 30×30 XBM 资源（GPL-3.0-or-later），并显示 PD 已选 PDO 序号及 SPR/PPS/EPR、申请电压/电流、VBUS 实测值。未连接 / 协商中显示占位符，不将未完成协商报告为有效合同。
 - 静态字符数组由 `Statistics_Poll()` 最多每 200 ms 更新，读取的是 PD 协议内存状态和 PA7 VBUS ADC 镜像，不发起 I²C 访问。标签使用较短 ASCII 文本以适配 DPC27A 的 128×80 屏及固定 6 px 字体；不移植 IH01A 的中文字体与 UI 像素布局。
