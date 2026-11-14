@@ -104,3 +104,18 @@ GPIO 恢复过程从不主动拉高 SCL/SDA,依靠板上的 I2C 上拉电阻完�
 复现条件建议分别测试：无负载、仅开启 DC-DC、以及大功率输出（报告约 5 秒一次），记录持续时间与恢复计数，并在示波器上同步观察 PA13/SCL、PA14/SDA 与本地电源纹波。比较 400/100 kHz 时不应同时改变其它配置。
 
 本次通过 GitHub 仓库内容审查，**尚未在目标编译器或硬件上编译/验证**。
+
+## 2026-11-14：根据无负载实测收敛的 RX DMA/EV 中断竞争修复
+
+本次实测（11 次）：
+```text
+[I2C] rec#1 RX DMA cause=2 owner=2 addr=4f st=8 S1=0044 S2=0003
+[I2C] pre=0/0 post=1/1 rx=2 left=0 cf7=0000208b if=07005700 c2=1b30 age=0
+```
+
+- `cause=2` 明确表示 EV 事件中断风暴，非 75 ms 超时；`owner=1/2` 均曾出现，涉及 SW3538/GX21M15U 共享的 I2C1。
+- `rx=2 left=0` 和 `DMA1.INTFR` 的 TC7=1、TE7=0 说明 DMA 两字节传输已经完成，未见 DMA 错误，正常的 DMA7 完成收尾却未及时发生。
+- `I2C1.CTLR2=0x1B30`：LAST（0x1000）、DMAEN（0x0800）、ITEVTEN（0x0200）、ITERREN（0x0100）均为 1；`STAR1=0x44` 的 BTF/RXNE 会引发仍然开启的 EV IRQ。由于固件将 I2C EV 设为子优先级 0、DMA7 为子优先级 1，持续待处理的 EV IRQ 可能抢先反复运行直到第 64 次熔断，造成 TC7 处理饥饿。
+- **最小修复**：接收地址 `ADDR` 处理分支进入 `rx_len >= 2` 时，先 `I2C_ITConfig(I2C1, I2C_IT_EVT, DISABLE)`，再按原顺序配置 DMA/LAST、清除 ADDR。数据阶段由 DMA7 TC/TE ISR 接管，不再需要 EV IRQ。I2C ER IRQ 不关闭；下一条事务 `start_transaction()` 会重新使能 EV。单字节读取与 TX DMA 路径不变。
+- **判据**：修复后在无负载、仅开启 DC-DC、大功率输出三种工况下重复观察。预期 EV 风暴恢复显著减少或消失；若仍出现 `RX DMA cause=2`，重点核对 `c2` 的 `0x0200` 位是否仍使能，并继续检查 DMA IRQ 响应/多字节 LAST。此修复是基于软件现场的因果推断，**尚未编译或实机验证**。
+

@@ -717,8 +717,15 @@ void I2C_API_EV_IRQHandler(void)
             }
             else
             {
-                /* Configure DMA + LAST before clearing ADDR so the first
-                 * byte cannot outrun DMA setup at 400 kHz. */
+                /* Once ADDR is cleared, the RX data phase is owned entirely
+                 * by DMA1 CH7. RXNE/BTF can keep I2C1_EV asserted even after
+                 * DMA TC7 is pending. Since EV has higher subpriority than
+                 * CH7, an EV interrupt storm can starve the DMA-completion
+                 * handler and abort an otherwise complete two-byte read.
+                 * Disable only event IRQs BEFORE releasing ADDR; retain ERR
+                 * IRQs, DMA TC/TE IRQs and the existing watchdog.
+                 * start_transaction() re-enables EV for the next START. */
+                I2C_ITConfig(I2C1, (uint16_t)I2C_IT_EVT, DISABLE);
                 start_rx_dma();
                 clear_addr_flag();
             }
