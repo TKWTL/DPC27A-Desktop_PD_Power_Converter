@@ -7,6 +7,14 @@ extern "C" {
 
 #include "ch32x035.h"
 
+/* Production: 0 strips optional UART logs and I2C fault register snapshots,
+ * saving Flash and RAM. Set to 1 for a temporary diagnostic build.
+ * Changing this requires a clean rebuild of all dependent translation units. */
+#define DPC_DIAGNOSTICS_ENABLE       0
+#if (DPC_DIAGNOSTICS_ENABLE != 0) && (DPC_DIAGNOSTICS_ENABLE != 1)
+#error "DPC_DIAGNOSTICS_ENABLE must be 0 or 1"
+#endif
+
 /*
  * Desktop PD Power Converter board net aliases.
  *

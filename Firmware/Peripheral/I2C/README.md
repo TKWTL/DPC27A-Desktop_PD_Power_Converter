@@ -92,9 +92,9 @@ result = I2C_API_TakeResult(owner);
 GPIO 恢复过程从不主动拉高 SCL/SDA,依靠板上的 I2C 上拉电阻完成拉高。
 
 
-## 2026-11-14：复位前故障现场锁存
+## 2026-11-14：可选故障现场锁存（诊断构建）
 
-串口恢复日志现在输出两行。第一行仍显示原始错误及 `STAR1/STAR2`，新增 `cause`（1=75 ms 超时、2=事件中断风暴、3=DMA TE 错误、4=其他 I²C 错误）、`owner`（1=SW3538、2=GX21M15U、3=应用）、7 位地址及冻结的事务状态 `st`。第二行：
+设置 `Firmware/APP/main.h` 中 `#define DPC_DIAGNOSTICS_ENABLE 1` 并 **Clean Build** 后，串口恢复日志会输出两行；默认生产构建 `DPC_DIAGNOSTICS_ENABLE=0` 时，这些日志及中断中的 DMA/寄存器快照代码均不编译。第一行仍显示原始错误及 `STAR1/STAR2`，新增 `cause`（1=75 ms 超时、2=事件中断风暴、3=DMA TE 错误、4=其他 I²C 错误）、`owner`（1=SW3538、2=GX21M15U、3=应用）、7 位地址及冻结的事务状态 `st`。第二行：
 
 - `pre=SCL/SDA`：故障现场 GPIO 电平；`post=SCL/SDA`：恢复后 GPIO 电平。两者**不是同一时刻**。
 - `rx`：请求读取的字节数量；`left`：DMA1 CH7 故障瞬间剩余计数；`cf7`：DMA1 CH7 CFGR；`if`：DMA1 INTFR；`c2`：I²C1 CTLR2；`age`：当前状态停滞时长（ms）。
@@ -119,3 +119,34 @@ GPIO 恢复过程从不主动拉高 SCL/SDA,依靠板上的 I2C 上拉电阻完�
 - **最小修复**：接收地址 `ADDR` 处理分支进入 `rx_len >= 2` 时，先 `I2C_ITConfig(I2C1, I2C_IT_EVT, DISABLE)`，再按原顺序配置 DMA/LAST、清除 ADDR。数据阶段由 DMA7 TC/TE ISR 接管，不再需要 EV IRQ。I2C ER IRQ 不关闭；下一条事务 `start_transaction()` 会重新使能 EV。单字节读取与 TX DMA 路径不变。
 - **判据**：修复后在无负载、仅开启 DC-DC、大功率输出三种工况下重复观察。预期 EV 风暴恢复显著减少或消失；若仍出现 `RX DMA cause=2`，重点核对 `c2` 的 `0x0200` 位是否仍使能，并继续检查 DMA IRQ 响应/多字节 LAST。此修复是基于软件现场的因果推断，**尚未编译或实机验证**。
 
+
+## 2026-11-14：5 分钟大功率实测通过与可复用教训
+
+**测试结果**：启用 RX DMA 数据阶段屏蔽 I²C EV 中断的修复版后，用户进行了 **5 分钟连续大功率输出测试，未观察到 I²C 报错/恢复日志**。这是实机证据，说明此前频繁发生的中断风暴在这一测试条件下已消失；它不代表已验证所有功率、温度、负载瞬态及长期运行工况。当前仍维持 400 kHz 时钟和原有 75 ms 看门狗。
+
+### 故障链与关键判断
+
+1. 修复前不带负载也偶发，开启 DC-DC 后概率增大，大功率约每 5 秒触发一次；SW3538（`owner=1 addr=0x3C`）与 GX21M15U（`owner=2 addr=0x4F`）均受影响，故障点应优先定位到**共享 I²C1/DMA 接收后端**，而不是单一从设备。
+2. 实测 `cause=2` 为 **I²C EV 中断风暴**；状态 `WAIT_RX_DMA`，`rx=2 left=0`，`DMA1.INTFR=0x07005000/0x07005700` 中 **TC7=1、TE7=0**，表明 DMA 已完成两字节搬运，没有 DMA7 传输错误。
+3. 故障时 `STAR1=0x0044`（BTF/RXNE），`STAR2=0x0003`（MSL/BUSY），`CTLR2=0x1B30`（包括 LAST、DMAEN、ITEVTEN、ITERREN）。DMA 传输已经完成，**EV 仍然使能**；它对 BTF 等未处理标志持续响应，且 I2C EV 子优先级高于 DMA7，因此可能反复抢先进入 EV ISR，达到 64 次熔断阈值，导致 DMA7 TC ISR 无法及时 STOP 收尾。
+4. **有效修复**：在 `WAIT_ADDR_RX` 的 `rx_len >= 2` 分支，先关闭 **I2C_IT_EVT**，然后 `start_rx_dma()`，最后 `clear_addr_flag()`。接收数据阶段仅由 DMA7 TC/TE 中断处理；**保留 I2C_IT_ERR** 和看门狗，下一条事务产生 START 时重新开启 EV。单字节 RX、TX DMA、ACK/LAST、通信速率保持原设计。
+5. **工程教训**：使用 DMA 的外设，不是启用 DMA 后就可以无限保留该阶段不再需要的事件中断。必须按事务状态明确中断所有权，避免“事件标志保持置位 → 高频中断重入 → 优先级较低的 DMA 完成 ISR 饥饿”。即便 DMA 计数归零，也不能推断 CPU 已处理 DMA 完成收尾。若仅见恢复后 `SCL=SDA=1`，也不能倒推故障时总线空闲；故障状态必须在复位前采样。
+6. **固件体积约束**：诊断快照只保留为可编译选项，不应长期运行、永久占用 FLASH/SRAM；调试后应关闭，并比较链接 `.map` 中 `.text/.rodata/.data` 和 `.bss` 的占用。此次没有提供关闭前后的编译数据，不能声称具体节省了多少字节。
+
+### 发布版与诊断版切换
+
+唯一开关位于 `Firmware/APP/main.h`：
+
+```c
+#define DPC_DIAGNOSTICS_ENABLE 0  /* 发布版：默认关闭 */
+#define DPC_DIAGNOSTICS_ENABLE 1  /* 诊断版：临时切换为 1 */
+```
+
+上面两行是**二选一示例**，实际文件只保留一个宏定义。该宏在编译期控制：
+
+- `0`：剔除 I²C 故障原因、总线电平、DMA 寄存器现场快照及完整的两行恢复日志；同时不编译 `app_tasks.c` 中的启动提示、每秒 VBUS/PM、OLED 就绪、功率分配、CFG 与风扇调试打印。正常 I²C 传输、自动恢复、PD/功率控制、风扇、UI 与复位标志清除**不受影响**。
+- `1`：恢复上述诊断功能和串口打印，便于复现后再次查 `cause/owner/st/rx/left/STAR1/STAR2/CTLR2/INTFR`。
+
+修改宏后必须 **Clean Build**（包括 `i2c_api.c` 与 `app_tasks.c`），避免宏切换后的旧目标文件混用。切换不会改变引脚、I²C 时钟、DMA 通道或休眠功能。
+
+后续若复发，先在相同负载条件下用诊断版观察 `DMA7 TC7`、`DMA7 TE7` 和 `CTLR2 ITEVTEN`；对已经确认的中断竞争不要先尝试降低 I²C 时钟来掩盖。

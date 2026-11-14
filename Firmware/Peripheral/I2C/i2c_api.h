@@ -2,6 +2,7 @@
 #define I2C_API_H_
 
 #include <stdint.h>
+#include "main.h"  /* DPC_DIAGNOSTICS_ENABLE */
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,6 +62,7 @@ typedef enum
     I2C_API_STATE_WAIT_RX_SINGLE
 } I2C_API_State;
 
+#if DPC_DIAGNOSTICS_ENABLE
 /* Event source recorded before cleanup, never inferred from post-recovery pins. */
 typedef enum
 {
@@ -96,6 +98,7 @@ typedef struct
     uint8_t fault_scl_high;
     uint8_t fault_sda_high;
 } I2C_API_Diagnostic;
+#endif /* DPC_DIAGNOSTICS_ENABLE */
 
 /*
  * CH32X035 backend:
@@ -130,11 +133,13 @@ uint8_t I2C_API_IsBusy(void);
 I2C_API_Owner I2C_API_GetOwner(void);
 I2C_API_Result I2C_API_GetResult(I2C_API_Owner owner);
 I2C_API_Result I2C_API_TakeResult(I2C_API_Owner owner);
+/* Diagnostic-only status API: completely omitted in production builds. */
+#if DPC_DIAGNOSTICS_ENABLE
 uint32_t I2C_API_GetRecoveryCount(void);
-
 I2C_API_Error I2C_API_GetLastError(void);
 const char *I2C_API_GetLastErrorName(void);
 void I2C_API_GetDiagnostic(I2C_API_Diagnostic *diag);
+#endif
 
 /* Transaction engine handlers; called only by APP/ch32x035_it.c wrappers. */
 void I2C_API_EV_IRQHandler(void);

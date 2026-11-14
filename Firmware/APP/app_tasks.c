@@ -1,4 +1,5 @@
 #include "app_tasks.h"
+#include "main.h" /* DPC_DIAGNOSTICS_ENABLE */
 #include "coroOS.h"
 #include "debug.h"
 #include "pd.h"
@@ -37,6 +38,7 @@ ui_t ui;
 
 static void APP_PrintResetCause(void)
 {
+#if DPC_DIAGNOSTICS_ENABLE
     uint8_t any = 0u;
     printf("[RESET] cause:");
     if(RCC_GetFlagStatus(RCC_FLAG_PORRST) != RESET) { printf(" POR/PDR"); any = 1u; }
@@ -47,6 +49,7 @@ static void APP_PrintResetCause(void)
     if(RCC_GetFlagStatus(RCC_FLAG_LPWRRST) != RESET) { printf(" LPWR"); any = 1u; }
     if(!any) printf(" unknown/cleared");
     printf("\r\n");
+#endif
     RCC_ClearFlag();
 }
 
@@ -64,15 +67,20 @@ THRD_DECLARE(thread_pd)
 THRD_DECLARE(thread_vbus)
 {
     static uint16_t mv;
+#if DPC_DIAGNOSTICS_ENABLE
     static uint8_t log_div;
     static uint32_t sleep_left;
+#endif
     THRD_BEGIN;
+#if DPC_DIAGNOSTICS_ENABLE
     log_div = 0u;
+#endif
     while(1)
     {
         THRD_DELAY(20u);
         mv = VBUS_Sense_ReadMillivolts();
         PD_SetVbusMillivolts(mv);
+#if DPC_DIAGNOSTICS_ENABLE
         if(++log_div >= 50u)
         {
             log_div = 0u;
@@ -90,6 +98,7 @@ THRD_DECLARE(thread_vbus)
                        (unsigned long)((sleep_left + 999ul) / 1000ul),
                        (unsigned)pm_api_is_sleeping());
         }
+#endif
     }
     THRD_END;
 }
@@ -197,7 +206,9 @@ THRD_DECLARE(thread_ui)
     Key_Init();
     MiaoUi_Setup(&ui);
     key_service_ms = TIME_Millis();
+#if DPC_DIAGNOSTICS_ENABLE
     printf("[OLED] SH1107 ready: logical 128x80, native 80x128, external VPP, charge pump disabled\r\n");
+#endif
 
     while(1)
     {
@@ -281,14 +292,19 @@ THRD_DECLARE(thread_soft_i2c_service)
 
 THRD_DECLARE(thread_i2c_watchdog)
 {
+#if DPC_DIAGNOSTICS_ENABLE
     static uint32_t last_recovery_count;
     static I2C_API_Diagnostic d;
+#endif
     THRD_BEGIN;
+#if DPC_DIAGNOSTICS_ENABLE
     last_recovery_count = I2C_API_GetRecoveryCount();
+#endif
     while(1)
     {
         THRD_DELAY(10u);
         I2C_API_WatchdogService(TIME_Millis());
+#if DPC_DIAGNOSTICS_ENABLE
         if(I2C_API_GetRecoveryCount() != last_recovery_count)
         {
             last_recovery_count = I2C_API_GetRecoveryCount();
@@ -306,6 +322,7 @@ THRD_DECLARE(thread_i2c_watchdog)
                    (unsigned long)d.dma_rx_cfgr, (unsigned long)d.dma_intfr,
                    (unsigned)d.i2c_ctlr2, (unsigned long)d.transaction_age_ms);
         }
+#endif
     }
     THRD_END;
 }
@@ -445,7 +462,9 @@ THRD_DECLARE(thread_power_mirror)
     static uint8_t w0;
     static uint8_t w1;
     static uint8_t w2;
+#if DPC_DIAGNOSTICS_ENABLE
     static uint8_t changed;
+#endif
 
     THRD_BEGIN;
     THRD_DELAY(POLL_PHASE_POWER_MS);
@@ -487,35 +506,45 @@ THRD_DECLARE(thread_power_mirror)
             w0 = PWR_Alloc_ApiW(0u, share[0]);
             w1 = PWR_Alloc_ApiW(1u, share[1]);
             w2 = PWR_Alloc_ApiW(2u, share[2]);
+#if DPC_DIAGNOSTICS_ENABLE
             changed = 0u;
+#endif
 
             if((PWR_Alloc_ApplyNeeded(0u, w0) != 0u) && (SW3538_IsOnline(&s_sw3538) != 0u))
             {
                 THRD_SPAWN_ARGS(SW3538_SetPowerLimitW, &s_sw3538, w0);
                 PWR_Alloc_ApplyDone(0u, w0);
+#if DPC_DIAGNOSTICS_ENABLE
                 changed = 1u;
+#endif
             }
 
             if((PWR_Alloc_ApplyNeeded(1u, w1) != 0u) && (SW3526_IsOnline(&s_sw3526_1) != 0u))
             {
                 THRD_SPAWN_ARGS(SW3526_SetPowerLimitW, &s_sw3526_1, w1);
                 PWR_Alloc_ApplyDone(1u, w1);
+#if DPC_DIAGNOSTICS_ENABLE
                 changed = 1u;
+#endif
             }
 
             if((PWR_Alloc_ApplyNeeded(2u, w2) != 0u) && (SW3526_IsOnline(&s_sw3526_2) != 0u))
             {
                 THRD_SPAWN_ARGS(SW3526_SetPowerLimitW, &s_sw3526_2, w2);
                 PWR_Alloc_ApplyDone(2u, w2);
+#if DPC_DIAGNOSTICS_ENABLE
                 changed = 1u;
+#endif
             }
 
+#if DPC_DIAGNOSTICS_ENABLE
             if(changed != 0u)
             {
                 printf("[PWR] budget %lu W -> 3538 %u W / C1 %u W / C2 %u W\r\n",
                        (unsigned long)PWR_Limit_GetW(),
                        (unsigned)w0, (unsigned)w1, (unsigned)w2);
             }
+#endif
 
             /* Debounced port protocol-mask writes requested by the UI. */
             if((s_proto_req_pending[APP_PORT_PROTO_SW3538] != 0u) &&
@@ -526,8 +555,10 @@ THRD_DECLARE(thread_power_mirror)
                 s_proto_req_pending[APP_PORT_PROTO_SW3538] = 0u;
                 THRD_SPAWN_ARGS(SW3538_SetProtocolMask, &s_sw3538,
                                 (SW3538_ProtocolMask)s_proto_req_mask[APP_PORT_PROTO_SW3538]);
+#if DPC_DIAGNOSTICS_ENABLE
                 printf("[CFG] SW3538 protocol mask 0x%03X\r\n",
                        (unsigned)s_proto_req_mask[APP_PORT_PROTO_SW3538]);
+#endif
             }
 
             if((s_proto_req_pending[APP_PORT_PROTO_SW3526_1] != 0u) &&
@@ -538,8 +569,10 @@ THRD_DECLARE(thread_power_mirror)
                 s_proto_req_pending[APP_PORT_PROTO_SW3526_1] = 0u;
                 THRD_SPAWN_ARGS(SW3526_SetProtocolMask, &s_sw3526_1,
                                 (SW3526_ProtocolMask)s_proto_req_mask[APP_PORT_PROTO_SW3526_1]);
+#if DPC_DIAGNOSTICS_ENABLE
                 printf("[CFG] SW3526 C1 protocol mask 0x%03X\r\n",
                        (unsigned)s_proto_req_mask[APP_PORT_PROTO_SW3526_1]);
+#endif
             }
 
             if((s_proto_req_pending[APP_PORT_PROTO_SW3526_2] != 0u) &&
@@ -550,8 +583,10 @@ THRD_DECLARE(thread_power_mirror)
                 s_proto_req_pending[APP_PORT_PROTO_SW3526_2] = 0u;
                 THRD_SPAWN_ARGS(SW3526_SetProtocolMask, &s_sw3526_2,
                                 (SW3526_ProtocolMask)s_proto_req_mask[APP_PORT_PROTO_SW3526_2]);
+#if DPC_DIAGNOSTICS_ENABLE
                 printf("[CFG] SW3526 C2 protocol mask 0x%03X\r\n",
                        (unsigned)s_proto_req_mask[APP_PORT_PROTO_SW3526_2]);
+#endif
             }
 
             /* Boot default, once: enable both SW3538 fast-charge paths (the
@@ -562,7 +597,9 @@ THRD_DECLARE(thread_power_mirror)
                 s_sw3538_paths_pending = 0u;
                 THRD_SPAWN_ARGS(SW3538_SetPortFastChargeEnabled, &s_sw3538, 1u, 1u);
                 THRD_SPAWN_ARGS(SW3538_SetPortFastChargeEnabled, &s_sw3538, 2u, 1u);
+#if DPC_DIAGNOSTICS_ENABLE
                 printf("[CFG] SW3538 fast-charge paths: PT1+PT2 enabled\r\n");
+#endif
             }
         }
         THRD_DELAY(POWER_MIRROR_POLL_MS);
@@ -640,8 +677,10 @@ THRD_DECLARE(thread_fan)
             applied = pwm;
             applied_valid = 1u;
             FAN_PWM_SetDuty8(pwm);
+#if DPC_DIAGNOSTICS_ENABLE
             printf("[FAN] %dC online=%u uvp=%u -> pwm %u\r\n",
                    (int)temp_c, (unsigned)online, (unsigned)uvp, (unsigned)pwm);
+#endif
         }
 
         THRD_DELAY(FAN_POLL_MS);
@@ -779,8 +818,11 @@ static coro_pt_t s_thread_states[sizeof(s_threads) / sizeof(s_threads[0])];
 
 void APP_Tasks_Init(void)
 {
+#if DPC_DIAGNOSTICS_ENABLE
     printf("\r\n=== Desktop PD Power Converter / CH32X035C8T6 ===\r\n");
+#endif
     APP_PrintResetCause();
+#if DPC_DIAGNOSTICS_ENABLE
     printf("SystemClk:%lu Hz ChipID:%08lx\r\n",
            (unsigned long)SystemCoreClock, (unsigned long)DBGMCU_GetCHIPID());
     printf("UART1: PB10 TX / PB11 RX @ 921600, DMA async\r\n");
@@ -788,6 +830,7 @@ void APP_Tasks_Init(void)
            (unsigned long)FAN_PWM_GetFrequencyHz(), (unsigned)(FAN_PWM_MAX_LEVEL + 1U));
     printf("Display SPI1: PA11 SCK / PA10 MOSI @ %lu Hz, DMA1 CH3 TX + IRQ, NSS=PA12\r\n",
            (unsigned long)SPI_DMA_GetClockHz());
+#endif
 
     Board_Init();
     FAN_PWM_Init();
@@ -797,8 +840,10 @@ void APP_Tasks_Init(void)
     I2C_API_Init(I2C_API_DEFAULT_CLOCK_HZ);
     SW3538_HandleInit(&s_sw3538, I2C_API_OWNER_SW3538);
     GX21M15_HandleInit(&s_gx21m15, I2C_API_OWNER_GX21M15U, GX21M15_I2C_ADDR_DEFAULT);
+#if DPC_DIAGNOSTICS_ENABLE
     printf("I2C1: PA13 SCL / PA14 SDA @ %lu Hz, EV/ER + TX/RX DMA IRQ; SW3538 + GX21M15 ready\r\n",
            (unsigned long)I2C_API_GetClockHz());
+#endif
 
     s_sw3526_bus1.scl_port = SW3526_1_SCL_GPIO_Port;
     s_sw3526_bus1.scl_pin = SW3526_1_SCL_Pin;
@@ -817,7 +862,9 @@ void APP_Tasks_Init(void)
     s_sw3526_bus2.stretch_timeout_us = SOFT_I2C_DEFAULT_STRETCH_TIMEOUT_US;
     SoftI2C_Init(&s_sw3526_bus2);
     SW3526_HandleInit(&s_sw3526_2, &s_sw3526_bus2);
+#if DPC_DIAGNOSTICS_ENABLE
     printf("Soft-I2C: SW3526#1 PA4/PA3, SW3526#2 PA1/PA2; independent handles\r\n");
+#endif
 
     /* Startup protocol defaults: enable every protocol family on all three
      * controllers so vendor OTP differences cannot leave functions disabled,
@@ -832,11 +879,13 @@ void APP_Tasks_Init(void)
     APP_PortProtocol_Touch(APP_PORT_PROTO_SW3526_1, (uint16_t)SW3526_PROTOCOL_ENABLE_ALL);
     APP_PortProtocol_Touch(APP_PORT_PROTO_SW3526_2, (uint16_t)SW3526_PROTOCOL_ENABLE_ALL);
 
+#if DPC_DIAGNOSTICS_ENABLE
     printf("PD Sink: SPR <= %u mV; EPR nominal %u mV / %u mA; policy <= %u mA\r\n",
            (unsigned)PD_SPR_MAX_FIXED_MV,
            (unsigned)PD_EPR_NOMINAL_MV,
            (unsigned)PD_NOMINAL_REQUEST_MA,
            (unsigned)PD_POLICY_REQUEST_MAX_MA);
+#endif
 
     s_app_boot_ms = TIME_Millis();
     pm_api_init();
