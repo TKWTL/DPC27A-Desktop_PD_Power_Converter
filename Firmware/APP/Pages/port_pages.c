@@ -1,6 +1,6 @@
 /* Per-port fast-charge protocol pages.
  *
- * Three TEXT pages reachable straight from the icon menu:
+ * Three TEXT pages reached from Settings' nested icon menu:
  *   [TypeA+C]   SW3538 (the Type-A and Type-C receptacles, PT1/PT2)
  *   [TypeC1]    SW3526 #1
  *   [TypeC2]    SW3526 #2
@@ -172,7 +172,7 @@ void Add_Port_Items(ui_page_t *parent_page)
     AddItem("-TypeA+C", UI_ITEM_PARENTS, img_type_ac, &s_enter_3538,
             parent_page, &s_page_3538, 0);
     AddPage("[TypeA+C]", &s_page_3538, UI_PAGE_TEXT, parent_page);
-    AddItem("[Menu]", UI_ITEM_RETURN, 0, &s_back_3538,
+    AddItem("[Return]", UI_ITEM_RETURN, 0, &s_back_3538,
             &s_page_3538, parent_page, 0);
 
     for(k = 0u; k < PORT_PROTO_3538_COUNT; ++k)
@@ -202,7 +202,7 @@ void Add_Port_Items(ui_page_t *parent_page)
                 &s_enter_3526[idx], parent_page, &s_page_3526[idx], 0);
         AddPage((idx == 0u) ? "[TypeC1]" : "[TypeC2]", &s_page_3526[idx],
                 UI_PAGE_TEXT, parent_page);
-        AddItem("[Menu]", UI_ITEM_RETURN, 0, &s_back_3526[idx],
+        AddItem("[Return]", UI_ITEM_RETURN, 0, &s_back_3526[idx],
                 &s_page_3526[idx], parent_page, 0);
 
         for(k = 0u; k < PORT_PROTO_3526_COUNT; ++k)

@@ -45,6 +45,10 @@ uint8_t PD_IsEPRContractActive(void);
 uint8_t PD_IsPowerReady(void);
 uint16_t PD_GetContractVoltageMv(void);
 uint16_t PD_GetContractCurrentMa(void);
+/* 1-based Request Data Object position. Read only after PD_IsPowerReady():
+ * an in-flight Request can be rejected by the source. */
+uint8_t PD_GetRequestedPDOIndex(void);
+uint8_t PD_IsPPSContractActive(void);
 /* Fast-poll request for the scheduler idle hook: true while PD needs main-loop
  * passes at full speed (source attached, GoodCRC in flight).  Sleeping here
  * stretches the Sink sender-response latency outside the PD timing windows. */

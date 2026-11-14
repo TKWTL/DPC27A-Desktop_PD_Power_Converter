@@ -382,6 +382,8 @@ void Create_Parameter(ui_t *ui);
 void Create_Text(ui_t *ui);
 void Create_MenuTree(ui_t *ui);
 void MiaoUi_Setup(ui_t *ui);
+/* Updates the cached PD PDO request and VBUS statistics rows (200 ms grid). */
+void Statistics_Poll(void);
 
 #ifdef __cplusplus
 }

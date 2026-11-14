@@ -10,16 +10,89 @@
 #include "Pages/port_pages.h"
 #include "Pages/game_dinosaur.h"
 #include "framework/pm_ui_register.h"
+#include "pd.h"
+#include "vbus_sense.h"
+#include "time_api.h"
+#include <stdio.h>
 
 static ui_page_t s_main_page;
+static ui_page_t s_statistics_page;
+static ui_page_t s_settings_icons_page;
 static ui_page_t s_settings_page;
 
 static ui_item_t s_dashboard_item;
+static ui_item_t s_statistics_item;
+static ui_item_t s_statistics_back_item;
+static ui_item_t s_stats_pdo_item, s_stats_req_item, s_stats_current_item, s_stats_vbus_item;
 static ui_item_t s_settings_item;
+static ui_item_t s_settings_detail_item;
 static ui_item_t s_settings_back_item;
 static ui_item_t s_about_item;
 static ui_item_t s_burnin_item;
 static ui_item_t s_dino_item;
+
+/* IH01A-style persistent, allocation-free read-only rows. Neither the
+ * statistics page nor its periodic refresh performs any I2C transaction. */
+static char s_stats_pdo[20] = " PDO: --";
+static char s_stats_req[20] = " Req: --";
+static char s_stats_current[20] = " Cur: --";
+static char s_stats_vbus[20] = " VBUS: --";
+static uint32_t s_statistics_poll_ms;
+static uint8_t s_statistics_valid;
+
+void Statistics_Poll(void)
+{
+    uint32_t now = TIME_Millis();
+    uint32_t mv;
+    uint32_t ma;
+
+    if(s_statistics_valid && (uint32_t)(now - s_statistics_poll_ms) < 200u)
+        return;
+
+    s_statistics_valid = 1u;
+    s_statistics_poll_ms = now;
+    mv = VBUS_Sense_ReadMillivolts();
+    (void)snprintf(s_stats_vbus, sizeof(s_stats_vbus),
+                   " VBUS %lu.%02luV", (unsigned long)(mv / 1000u),
+                   (unsigned long)((mv % 1000u) / 10u));
+
+    /* Selection happens before PS_RDY; do not report an in-flight Request
+     * as an active PD contract. Detached inputs still show the ADC VBUS. */
+    if(!PD_IsConnected())
+    {
+        (void)snprintf(s_stats_pdo, sizeof(s_stats_pdo), " PDO: DC/--");
+        (void)snprintf(s_stats_req, sizeof(s_stats_req), " Req: --");
+        (void)snprintf(s_stats_current, sizeof(s_stats_current), " Cur: --");
+    }
+    else if(!PD_IsPowerReady())
+    {
+        (void)snprintf(s_stats_pdo, sizeof(s_stats_pdo), " PDO: NEG");
+        (void)snprintf(s_stats_req, sizeof(s_stats_req), " Req: --");
+        (void)snprintf(s_stats_current, sizeof(s_stats_current), " Cur: --");
+    }
+    else
+    {
+        mv = PD_GetContractVoltageMv();
+        ma = PD_GetContractCurrentMa();
+        (void)snprintf(s_stats_pdo, sizeof(s_stats_pdo), " PDO#%u %s",
+                       (unsigned)PD_GetRequestedPDOIndex(),
+                       PD_IsEPRContractActive() ? "EPR" :
+                       (PD_IsPPSContractActive() ? "PPS" : "SPR"));
+        (void)snprintf(s_stats_req, sizeof(s_stats_req),
+                       " Req %lu.%02luV", (unsigned long)(mv / 1000u),
+                       (unsigned long)((mv % 1000u) / 10u));
+        (void)snprintf(s_stats_current, sizeof(s_stats_current),
+                       " Cur %lu.%02luA", (unsigned long)(ma / 1000u),
+                       (unsigned long)((ma % 1000u) / 10u));
+    }
+}
+
+/* Tapping a read-only row returns to Statistics instead of opening Text_Widget. */
+static void statistics_readonly(ui_t *ui)
+{
+    if(ui != 0 && ui->action == UI_ACTION_NONE)
+        ui->action = UI_ACTION_BACK;
+}
 
 void Create_Parameter(ui_t *ui)
 {
@@ -53,18 +126,37 @@ void Create_MenuTree(ui_t *ui)
     AddItem("-Dashboard", UI_ITEM_WORD, img_dashboard,
             &s_dashboard_item, &s_main_page, 0, Dashboard_Page);
 
-    /* Per-port fast-charge protocol pages: three more icon-page entries that
-     * open [TypeA+C], [TypeC1] and [TypeC2]. */
-    Add_Port_Items(&s_main_page);
+    /* IH01A-style root Statistics tile immediately before Settings. */
+    AddItem("-Statistics", UI_ITEM_PARENTS, img_statistics,
+            &s_statistics_item, &s_main_page, &s_statistics_page, 0);
+        AddPage("[Statistics]", &s_statistics_page, UI_PAGE_TEXT, &s_main_page);
+        AddItem("[Menu]", UI_ITEM_RETURN, 0, &s_statistics_back_item,
+                &s_statistics_page, &s_main_page, 0);
+        Statistics_Poll();
+        AddItem(s_stats_pdo, UI_ITEM_WORD, 0, &s_stats_pdo_item,
+                &s_statistics_page, 0, statistics_readonly);
+        AddItem(s_stats_req, UI_ITEM_WORD, 0, &s_stats_req_item,
+                &s_statistics_page, 0, statistics_readonly);
+        AddItem(s_stats_current, UI_ITEM_WORD, 0, &s_stats_current_item,
+                &s_statistics_page, 0, statistics_readonly);
+        AddItem(s_stats_vbus, UI_ITEM_WORD, 0, &s_stats_vbus_item,
+                &s_statistics_page, 0, statistics_readonly);
 
+    /* Icon submenu: TypeA+C, TypeC1, TypeC2, and Settings. The root and
+     * nested Settings use the exact same img_configuration bitmap in Flash.
+     * Long BACK from this icon page returns to the main icon menu. */
     AddItem("-Settings", UI_ITEM_PARENTS, img_configuration,
-            &s_settings_item, &s_main_page, &s_settings_page, 0);
-        AddPage("[Settings]", &s_settings_page, UI_PAGE_TEXT, &s_main_page);
-        AddItem("[Menu]", UI_ITEM_RETURN, 0,
-                &s_settings_back_item, &s_settings_page, &s_main_page, 0);
-        PM_UI_AddSleepSettingsItems(&s_settings_page);
-        Add_Disp_Items(&s_settings_page);
-        Add_Service_Items(&s_settings_page);
+            &s_settings_item, &s_main_page, &s_settings_icons_page, 0);
+        AddPage("[Settings]", &s_settings_icons_page, UI_PAGE_ICON, &s_main_page);
+        Add_Port_Items(&s_settings_icons_page);
+        AddItem("-Settings", UI_ITEM_PARENTS, img_configuration,
+                &s_settings_detail_item, &s_settings_icons_page, &s_settings_page, 0);
+            AddPage("[Settings]", &s_settings_page, UI_PAGE_TEXT, &s_settings_icons_page);
+            AddItem("[Return]", UI_ITEM_RETURN, 0,
+                    &s_settings_back_item, &s_settings_page, &s_settings_icons_page, 0);
+            PM_UI_AddSleepSettingsItems(&s_settings_page);
+            Add_Disp_Items(&s_settings_page);
+            Add_Service_Items(&s_settings_page);
 
     AddItem("-Burn-in Test", UI_ITEM_WORD, img_burn_in,
             &s_burnin_item, &s_main_page, 0, Burnin_Page);

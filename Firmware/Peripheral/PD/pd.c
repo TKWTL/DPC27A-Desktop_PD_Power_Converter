@@ -2110,6 +2110,16 @@ uint16_t PD_GetContractCurrentMa(void)
     return PD_Selected_mA;
 }
 
+uint8_t PD_GetRequestedPDOIndex(void)
+{
+    return PD_Selected_PDO;
+}
+
+uint8_t PD_IsPPSContractActive(void)
+{
+    return PD_PPS_ContractActive ? 1u : 0u;
+}
+
 uint8_t PD_WantsFastPoll(void)
 {
     /* Sender-response timing is tighter than the idle cadence: never sleep

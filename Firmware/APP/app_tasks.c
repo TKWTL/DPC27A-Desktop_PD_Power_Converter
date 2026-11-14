@@ -271,6 +271,7 @@ THRD_DECLARE(thread_ui)
                 if(app_pm_key_active() != 0u)
                     pm_api_refresh_idle();
 
+                Statistics_Poll(); /* 200 ms throttle; no bus access */
                 ui_loop(&ui);
             }
         }
