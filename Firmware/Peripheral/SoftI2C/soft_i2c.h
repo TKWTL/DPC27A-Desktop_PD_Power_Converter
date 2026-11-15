@@ -90,9 +90,25 @@ typedef struct
     uint8_t rx_byte;
     uint8_t rx_bits_left;
 
-    uint32_t next_edge_us;
-    uint32_t stretch_started_us;
-    uint32_t recovery_count;
+    uint32_t next_edge_ticks;
+    uint32_t stretch_started_ticks;
+    uint32_t half_period_ticks;
+    uint32_t stretch_timeout_ticks;
+    uint32_t last_service_ticks;
+    uint8_t scl_released_for_wait;
+
+    /* Debugger-readable RAM only; never print from the bit engine.
+     * Fault record survives successful transfers and bus recovery, until Init. */
+    volatile uint32_t fault_count;
+    volatile uint32_t max_service_gap_ticks;
+    volatile SoftI2C_Result last_fault_result;
+    volatile SoftI2C_State last_fault_state;
+    volatile SoftI2C_TxStage last_fault_tx_stage;
+    volatile uint16_t last_fault_tx_index;
+    volatile uint16_t last_fault_rx_index;
+    volatile uint8_t last_fault_lines; /* bit0=SCL, bit1=SDA, sampled high */
+    volatile uint32_t recovery_count;
+    volatile uint32_t recovery_fail_count;
 } SoftI2C_Handle;
 
 /* Backward-compatible type name used by the first project-port patch. */
@@ -107,7 +123,8 @@ uint8_t SoftI2C_TryWriteRead(SoftI2C_Handle *bus, uint8_t address_7bit,
                              const uint8_t *tx, uint16_t tx_len,
                              uint8_t *rx, uint16_t rx_len);
 
-/* Advance at most one timing/state-machine step. Never intentionally blocks. */
+/* Advance at most one timing/state-machine step, using free-running ticks.
+ * Never intentionally blocks; foreground callers must service frequently. */
 void SoftI2C_Service(SoftI2C_Handle *bus);
 
 SoftI2C_Result SoftI2C_GetResult(const SoftI2C_Handle *bus);

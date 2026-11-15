@@ -182,10 +182,18 @@ static uint8_t app_pm_key_active(void)
     return 0u;
 }
 
+/* Only defer expensive foreground rendering while a soft-I2C byte stream
+ * is active. PD, input scanning and the other scheduled tasks remain live. */
+static uint8_t app_soft_i2c_busy(void)
+{
+    return (uint8_t)(SoftI2C_IsBusy(&s_sw3526_bus1) || SoftI2C_IsBusy(&s_sw3526_bus2));
+}
+
 THRD_DECLARE(thread_ui)
 {
     static uint32_t key_service_ms;
     static uint32_t frame_ms;
+    static uint32_t dispatch_ms;
     static uint32_t now_ms;
     static uint32_t pm_sleep_ms;
     static uint8_t pm_sleep_seen;
@@ -203,12 +211,14 @@ THRD_DECLARE(thread_ui)
      * Sleeping here keeps every other thread (PD, telemetry, PM) running
      * during the settle time. */
     THRD_DELAY(UI_OLED_SETTLE_MS);
+    THRD_UNTIL(!app_soft_i2c_busy());
 
     diapInit();
     Key_Init();
     MiaoUi_Setup(&ui);
     key_service_ms = TIME_Millis();
     frame_ms = key_service_ms;
+    dispatch_ms = key_service_ms;
     indevReset();
 #if DPC_DIAGNOSTICS_ENABLE
     printf("[OLED] SH1107 ready: logical 128x80, native 80x128, external VPP, charge pump disabled\r\n");
@@ -216,8 +226,16 @@ THRD_DECLARE(thread_ui)
 
     while(1)
     {
-        THRD_DELAY(UI_DISPATCH_MS);
+        /* Normally dispatch every 2 ms. Also wake at a transaction boundary
+         * for an overdue frame: otherwise a new transfer can start in the
+         * same pass before the next 2 ms dispatch becomes due. */
+        THRD_UNTIL(((uint32_t)(TIME_Millis() - dispatch_ms) >= UI_DISPATCH_MS) ||
+                   (!app_soft_i2c_busy() &&
+                    (uint32_t)(TIME_Millis() - frame_ms) >= UI_FRAME_PERIOD_MS &&
+                    !pm_api_ui_should_block() && !pm_api_is_unstable_wake() &&
+                    APP_NoncriticalIOAllowed()));
         now_ms = TIME_Millis();
+        dispatch_ms = now_ms;
 
         /* Independent 8 ms key grid and 6 ms draw grid. A delayed dispatch
          * advances counters (bounded) but never invents GPIO observations. */
@@ -268,7 +286,11 @@ THRD_DECLARE(thread_ui)
                     indevPoll();
                 }
 
-                if((uint32_t)(now_ms - frame_ms) >= UI_FRAME_PERIOD_MS)
+                /* The service runs before UI; a completed transaction
+                 * leaves a render opportunity before power_mirror can start
+                 * the next one. Keep due frames pending, not catch-up bursts. */
+                if((uint32_t)(now_ms - frame_ms) >= UI_FRAME_PERIOD_MS &&
+                   !app_soft_i2c_busy())
                 {
                     frame_ms = now_ms; /* no catch-up rendering burst */
                     Statistics_Poll();
@@ -281,6 +303,9 @@ THRD_DECLARE(thread_ui)
                 ui.action = UI_ACTION_NONE;
             }
         }
+        /* A slow draw may make the 2 ms dispatch deadline already due.
+         * Never execute two UI passes back-to-back inside one coroutine call. */
+        THRD_YIELD;
     }
     THRD_END;
 }
@@ -787,8 +812,8 @@ static const coro_thread_fn_t s_threads[] =
 {
     thread_pd,
     thread_vbus,
-    thread_ui,
     thread_soft_i2c_service,
+    thread_ui,
     thread_i2c_watchdog,
     thread_power_mirror,
     thread_gx21m15,
@@ -890,7 +915,7 @@ void APP_Tasks_Idle(void)
 {
     IWDG_ReloadCounter();
 
-    if(SoftI2C_IsBusy(&s_sw3526_bus1) || SoftI2C_IsBusy(&s_sw3526_bus2))
+    if(app_soft_i2c_busy())
         return;
 
     if(PD_WantsFastPoll())

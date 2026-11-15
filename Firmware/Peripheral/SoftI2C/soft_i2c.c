@@ -31,15 +31,31 @@ static uint8_t time_reached(uint32_t now, uint32_t target)
     return ((int32_t)(now - target) >= 0) ? 1u : 0u;
 }
 
-static void schedule_after(SoftI2C_Handle *bus, uint32_t now)
+/* Take the timestamp AFTER the physical GPIO operation/observed rising
+ * edge, not at Service entry. A preempting ISR can only lengthen the hold. */
+static void schedule_after(SoftI2C_Handle *bus)
 {
-    bus->next_edge_us = now + (uint32_t)bus->half_period_us;
+    bus->next_edge_ticks = TIME_Ticks32() + bus->half_period_ticks;
+}
+
+static void record_fault(SoftI2C_Handle *bus, SoftI2C_Result result)
+{
+    bus->last_fault_result = result;
+    bus->last_fault_state = bus->state;
+    bus->last_fault_tx_stage = bus->tx_stage;
+    bus->last_fault_tx_index = bus->tx_index;
+    bus->last_fault_rx_index = bus->rx_index;
+    bus->last_fault_lines = (uint8_t)(line_high(bus->scl_port, bus->scl_pin) |
+                           (line_high(bus->sda_port, bus->sda_pin) << 1));
+    ++bus->fault_count;
 }
 
 static void finish_now(SoftI2C_Handle *bus, SoftI2C_Result result)
 {
-    release_line(bus->scl_port, bus->scl_pin);
+    record_fault(bus, result);
     release_line(bus->sda_port, bus->sda_pin);
+    release_line(bus->scl_port, bus->scl_pin);
+    bus->scl_released_for_wait = 0u;
     bus->state = SOFT_I2C_STATE_IDLE;
     bus->result = result;
 }
@@ -48,19 +64,29 @@ static void begin_stop(SoftI2C_Handle *bus, SoftI2C_Result result, uint32_t now)
 {
     bus->pending_result = result;
     bus->state = SOFT_I2C_STATE_STOP_SDA_LOW;
-    bus->next_edge_us = now;
+    bus->next_edge_ticks = now;
 }
 
-static uint8_t wait_scl_high(SoftI2C_Handle *bus, uint32_t now)
+/* A low interval driven by this master is NOT slave clock stretching.
+ * Only arm the timeout once SCL is actually released. Subsequent polls
+ * neither rewrite GPIO configuration nor restart the timeout. */
+static uint8_t wait_scl_high(SoftI2C_Handle *bus)
 {
-    release_line(bus->scl_port, bus->scl_pin);
+    if(!bus->scl_released_for_wait)
+    {
+        release_line(bus->scl_port, bus->scl_pin);
+        bus->stretch_started_ticks = TIME_Ticks32();
+        bus->scl_released_for_wait = 1u;
+    }
+
     if(line_high(bus->scl_port, bus->scl_pin))
     {
-        bus->stretch_started_us = now;
+        bus->scl_released_for_wait = 0u;
         return 1u;
     }
 
-    if((uint32_t)(now - bus->stretch_started_us) >= (uint32_t)bus->stretch_timeout_us)
+    if((uint32_t)(TIME_Ticks32() - bus->stretch_started_ticks) >=
+       bus->stretch_timeout_ticks)
     {
         finish_now(bus, SOFT_I2C_RESULT_TIMEOUT);
         return 2u;
@@ -74,16 +100,16 @@ static void tx_begin_byte(SoftI2C_Handle *bus, uint8_t byte, SoftI2C_TxStage sta
     bus->tx_byte = byte;
     bus->tx_mask = 0x80u;
     bus->state = SOFT_I2C_STATE_TX_BIT_SETUP;
-    bus->next_edge_us = now;
+    bus->next_edge_ticks = now;
 }
 
-static void rx_begin_byte(SoftI2C_Handle *bus, uint32_t now)
+static void rx_begin_byte(SoftI2C_Handle *bus)
 {
     bus->rx_byte = 0u;
     bus->rx_bits_left = 8u;
     release_line(bus->sda_port, bus->sda_pin);
     bus->state = SOFT_I2C_STATE_RX_SCL_HIGH_WAIT;
-    schedule_after(bus, now);
+    schedule_after(bus);
 }
 
 static void after_tx_ack(SoftI2C_Handle *bus, uint32_t now)
@@ -99,7 +125,7 @@ static void after_tx_ack(SoftI2C_Handle *bus, uint32_t now)
             else if(bus->rx_len != 0u)
             {
                 bus->state = SOFT_I2C_STATE_RESTART_RELEASE_SDA;
-                bus->next_edge_us = now;
+                bus->next_edge_ticks = now;
             }
             else
             {
@@ -116,7 +142,7 @@ static void after_tx_ack(SoftI2C_Handle *bus, uint32_t now)
             else if(bus->rx_len != 0u)
             {
                 bus->state = SOFT_I2C_STATE_RESTART_RELEASE_SDA;
-                bus->next_edge_us = now;
+                bus->next_edge_ticks = now;
             }
             else
             {
@@ -126,10 +152,11 @@ static void after_tx_ack(SoftI2C_Handle *bus, uint32_t now)
 
         case SOFT_I2C_TX_STAGE_ADDRESS_READ:
             bus->rx_index = 0u;
-            rx_begin_byte(bus, now);
+            rx_begin_byte(bus);
             break;
 
         default:
+            record_fault(bus, SOFT_I2C_RESULT_ERROR);
             begin_stop(bus, SOFT_I2C_RESULT_ERROR, now);
             break;
     }
@@ -159,10 +186,12 @@ static uint8_t begin_transfer(SoftI2C_Handle *bus,
     bus->rx_len = rx_len;
     bus->rx_index = 0u;
     bus->pending_result = SOFT_I2C_RESULT_OK;
-    bus->result = SOFT_I2C_RESULT_ACTIVE;
+    bus->tx_stage = SOFT_I2C_TX_STAGE_ADDRESS_WRITE;
+    bus->scl_released_for_wait = 0u;
+    bus->next_edge_ticks = TIME_Ticks32();
+    bus->last_service_ticks = bus->next_edge_ticks;
     bus->state = SOFT_I2C_STATE_BUS_CHECK;
-    bus->stretch_started_us = TIME_Micros();
-    bus->next_edge_us = bus->stretch_started_us;
+    bus->result = SOFT_I2C_RESULT_ACTIVE;
     return 1u;
 }
 
@@ -182,7 +211,19 @@ void SoftI2C_Init(SoftI2C_Handle *bus)
     bus->state = SOFT_I2C_STATE_IDLE;
     bus->result = SOFT_I2C_RESULT_IDLE;
     bus->pending_result = SOFT_I2C_RESULT_IDLE;
+    bus->half_period_ticks = TIME_UsToTicks(bus->half_period_us);
+    bus->stretch_timeout_ticks = TIME_UsToTicks(bus->stretch_timeout_us);
+    bus->scl_released_for_wait = 0u;
+    bus->fault_count = 0u;
+    bus->max_service_gap_ticks = 0u;
+    bus->last_fault_result = SOFT_I2C_RESULT_IDLE;
+    bus->last_fault_state = SOFT_I2C_STATE_IDLE;
+    bus->last_fault_tx_stage = SOFT_I2C_TX_STAGE_ADDRESS_WRITE;
+    bus->last_fault_tx_index = 0u;
+    bus->last_fault_rx_index = 0u;
+    bus->last_fault_lines = 0u;
     bus->recovery_count = 0u;
+    bus->recovery_fail_count = 0u;
     release_line(bus->scl_port, bus->scl_pin);
     release_line(bus->sda_port, bus->sda_pin);
 }
@@ -212,34 +253,42 @@ uint8_t SoftI2C_TryWriteRead(SoftI2C_Handle *bus, uint8_t address_7bit,
 void SoftI2C_Service(SoftI2C_Handle *bus)
 {
     uint32_t now;
+    uint32_t gap;
     uint8_t w;
 
     if(bus == 0 || bus->result != SOFT_I2C_RESULT_ACTIVE)
         return;
 
-    now = TIME_Micros();
-    if(!time_reached(now, bus->next_edge_us))
+    now = TIME_Ticks32();
+    gap = (uint32_t)(now - bus->last_service_ticks);
+    bus->last_service_ticks = now;
+    if(gap > bus->max_service_gap_ticks)
+        bus->max_service_gap_ticks = gap;
+    if(!time_reached(now, bus->next_edge_ticks))
         return;
 
     switch(bus->state)
     {
         case SOFT_I2C_STATE_BUS_CHECK:
-            release_line(bus->sda_port, bus->sda_pin);
-            w = wait_scl_high(bus, now);
+            if(!bus->scl_released_for_wait)
+                release_line(bus->sda_port, bus->sda_pin);
+            w = wait_scl_high(bus);
             if(w != 1u)
                 return;
-            if(!line_high(bus->sda_port, bus->sda_pin))
-            {
-                finish_now(bus, SOFT_I2C_RESULT_BUS_STUCK);
-                return;
-            }
-            schedule_after(bus, now);
+            /* Give the released SDA pull-up time to settle too. */
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_START_SDA_LOW;
             break;
 
         case SOFT_I2C_STATE_START_SDA_LOW:
+            if(!line_high(bus->scl_port, bus->scl_pin) ||
+               !line_high(bus->sda_port, bus->sda_pin))
+            {
+                finish_now(bus, SOFT_I2C_RESULT_BUS_STUCK);
+                return;
+            }
             drive_low(bus->sda_port, bus->sda_pin);
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_START_SCL_LOW;
             break;
 
@@ -254,16 +303,15 @@ void SoftI2C_Service(SoftI2C_Handle *bus)
                 release_line(bus->sda_port, bus->sda_pin);
             else
                 drive_low(bus->sda_port, bus->sda_pin);
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_TX_SCL_HIGH_WAIT;
-            bus->stretch_started_us = now;
             break;
 
         case SOFT_I2C_STATE_TX_SCL_HIGH_WAIT:
-            w = wait_scl_high(bus, now);
+            w = wait_scl_high(bus);
             if(w != 1u)
                 return;
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_TX_SCL_LOW;
             break;
 
@@ -273,27 +321,28 @@ void SoftI2C_Service(SoftI2C_Handle *bus)
             {
                 bus->tx_mask >>= 1;
                 bus->state = SOFT_I2C_STATE_TX_BIT_SETUP;
-                bus->next_edge_us = now;
+                bus->next_edge_ticks = now;
             }
             else
             {
                 release_line(bus->sda_port, bus->sda_pin);
-                schedule_after(bus, now);
+                schedule_after(bus);
                 bus->state = SOFT_I2C_STATE_TX_ACK_SCL_HIGH_WAIT;
-                bus->stretch_started_us = now;
             }
             break;
 
         case SOFT_I2C_STATE_TX_ACK_SCL_HIGH_WAIT:
-            w = wait_scl_high(bus, now);
+            w = wait_scl_high(bus);
             if(w != 1u)
                 return;
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_TX_ACK_SAMPLE;
             break;
 
         case SOFT_I2C_STATE_TX_ACK_SAMPLE:
             w = line_high(bus->sda_port, bus->sda_pin);
+            if(w)
+                record_fault(bus, SOFT_I2C_RESULT_NACK);
             drive_low(bus->scl_port, bus->scl_pin);
             if(w)
                 begin_stop(bus, SOFT_I2C_RESULT_NACK, now);
@@ -303,22 +352,21 @@ void SoftI2C_Service(SoftI2C_Handle *bus)
 
         case SOFT_I2C_STATE_RESTART_RELEASE_SDA:
             release_line(bus->sda_port, bus->sda_pin);
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_RESTART_SCL_HIGH_WAIT;
-            bus->stretch_started_us = now;
             break;
 
         case SOFT_I2C_STATE_RESTART_SCL_HIGH_WAIT:
-            w = wait_scl_high(bus, now);
+            w = wait_scl_high(bus);
             if(w != 1u)
                 return;
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_RESTART_SDA_LOW;
             break;
 
         case SOFT_I2C_STATE_RESTART_SDA_LOW:
             drive_low(bus->sda_port, bus->sda_pin);
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_RESTART_SCL_LOW;
             break;
 
@@ -329,10 +377,10 @@ void SoftI2C_Service(SoftI2C_Handle *bus)
             break;
 
         case SOFT_I2C_STATE_RX_SCL_HIGH_WAIT:
-            w = wait_scl_high(bus, now);
+            w = wait_scl_high(bus);
             if(w != 1u)
                 return;
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_RX_SAMPLE;
             break;
 
@@ -344,9 +392,8 @@ void SoftI2C_Service(SoftI2C_Handle *bus)
             bus->rx_bits_left--;
             if(bus->rx_bits_left != 0u)
             {
-                schedule_after(bus, now);
+                schedule_after(bus);
                 bus->state = SOFT_I2C_STATE_RX_SCL_HIGH_WAIT;
-                bus->stretch_started_us = now;
             }
             else
             {
@@ -355,17 +402,16 @@ void SoftI2C_Service(SoftI2C_Handle *bus)
                     drive_low(bus->sda_port, bus->sda_pin);   /* ACK */
                 else
                     release_line(bus->sda_port, bus->sda_pin); /* NACK */
-                schedule_after(bus, now);
+                schedule_after(bus);
                 bus->state = SOFT_I2C_STATE_RX_ACK_SCL_HIGH_WAIT;
-                bus->stretch_started_us = now;
             }
             break;
 
         case SOFT_I2C_STATE_RX_ACK_SCL_HIGH_WAIT:
-            w = wait_scl_high(bus, now);
+            w = wait_scl_high(bus);
             if(w != 1u)
                 return;
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_RX_ACK_SCL_LOW;
             break;
 
@@ -374,33 +420,39 @@ void SoftI2C_Service(SoftI2C_Handle *bus)
             release_line(bus->sda_port, bus->sda_pin);
             bus->rx_index++;
             if(bus->rx_index < bus->rx_len)
-                rx_begin_byte(bus, now);
+                rx_begin_byte(bus);
             else
                 begin_stop(bus, SOFT_I2C_RESULT_OK, now);
             break;
 
         case SOFT_I2C_STATE_STOP_SDA_LOW:
             drive_low(bus->sda_port, bus->sda_pin);
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_STOP_SCL_HIGH_WAIT;
-            bus->stretch_started_us = now;
             break;
 
         case SOFT_I2C_STATE_STOP_SCL_HIGH_WAIT:
-            w = wait_scl_high(bus, now);
+            w = wait_scl_high(bus);
             if(w != 1u)
                 return;
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_STOP_SDA_RELEASE;
             break;
 
         case SOFT_I2C_STATE_STOP_SDA_RELEASE:
             release_line(bus->sda_port, bus->sda_pin);
-            schedule_after(bus, now);
+            schedule_after(bus);
             bus->state = SOFT_I2C_STATE_STOP_DONE;
             break;
 
         case SOFT_I2C_STATE_STOP_DONE:
+            /* Never declare success with either physical line still low. */
+            if(!line_high(bus->scl_port, bus->scl_pin) ||
+               !line_high(bus->sda_port, bus->sda_pin))
+            {
+                finish_now(bus, SOFT_I2C_RESULT_BUS_STUCK);
+                return;
+            }
             bus->state = SOFT_I2C_STATE_IDLE;
             bus->result = bus->pending_result;
             break;
@@ -437,35 +489,77 @@ uint32_t SoftI2C_GetRecoveryCount(const SoftI2C_Handle *bus)
     return (bus != 0) ? bus->recovery_count : 0u;
 }
 
+/* Fault-only synchronous recovery. Cap the entire SCL wait budget, not
+ * 1 ms per pulse. IRQs remain enabled, especially USBPD. */
+static uint8_t recover_scl_high(SoftI2C_Handle *bus, uint32_t start, uint32_t budget)
+{
+    release_line(bus->scl_port, bus->scl_pin);
+    while(!line_high(bus->scl_port, bus->scl_pin))
+    {
+        if((uint32_t)(TIME_Ticks32() - start) >= budget)
+            return 0u;
+    }
+    return 1u;
+}
+
 uint8_t SoftI2C_Recover(SoftI2C_Handle *bus)
 {
     uint8_t i;
+    uint8_t ok = 0u;
+    uint32_t start;
+    uint32_t budget;
+
     if(bus == 0 || SoftI2C_IsBusy(bus))
         return 0u;
 
+    ++bus->recovery_count;
+    start = TIME_Ticks32();
+    budget = TIME_UsToTicks(SOFT_I2C_DEFAULT_STRETCH_TIMEOUT_US);
     release_line(bus->sda_port, bus->sda_pin);
-    release_line(bus->scl_port, bus->scl_pin);
+
+    if(!recover_scl_high(bus, start, budget))
+        goto done;
+    TIME_DelayUs(bus->half_period_us);
+    if(line_high(bus->scl_port, bus->scl_pin) &&
+       line_high(bus->sda_port, bus->sda_pin))
+    {
+        ok = 1u; /* already free: no gratuitous START or STOP */
+        goto done;
+    }
 
     for(i = 0u; i < 9u && !line_high(bus->sda_port, bus->sda_pin); ++i)
     {
         drive_low(bus->scl_port, bus->scl_pin);
         TIME_DelayUs(bus->half_period_us);
-        release_line(bus->scl_port, bus->scl_pin);
+        if(!recover_scl_high(bus, start, budget))
+            goto done;
         TIME_DelayUs(bus->half_period_us);
     }
+    if(!line_high(bus->sda_port, bus->sda_pin))
+        goto done;
 
+    /* STOP: SDA may go low only after SCL is low, then observed SCL high,
+     * then SDA released after the required high time. */
+    drive_low(bus->scl_port, bus->scl_pin);
     drive_low(bus->sda_port, bus->sda_pin);
     TIME_DelayUs(bus->half_period_us);
-    release_line(bus->scl_port, bus->scl_pin);
+    if(!recover_scl_high(bus, start, budget))
+        goto done;
     TIME_DelayUs(bus->half_period_us);
     release_line(bus->sda_port, bus->sda_pin);
     TIME_DelayUs(bus->half_period_us);
+    ok = (line_high(bus->scl_port, bus->scl_pin) &&
+          line_high(bus->sda_port, bus->sda_pin)) ? 1u : 0u;
 
-    bus->recovery_count++;
+done:
+    release_line(bus->sda_port, bus->sda_pin);
+    release_line(bus->scl_port, bus->scl_pin);
+    if(!ok)
+        ++bus->recovery_fail_count;
+    bus->scl_released_for_wait = 0u;
     bus->state = SOFT_I2C_STATE_IDLE;
     bus->result = SOFT_I2C_RESULT_IDLE;
-    return (line_high(bus->scl_port, bus->scl_pin) &&
-            line_high(bus->sda_port, bus->sda_pin)) ? 1u : 0u;
+    return ok;
 }
 
 static uint8_t wait_blocking(SoftI2C_Handle *bus)
