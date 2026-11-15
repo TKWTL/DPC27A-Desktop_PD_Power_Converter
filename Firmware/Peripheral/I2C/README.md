@@ -1,6 +1,6 @@
 # CH32X035 I2C1 中断驱动异步 DMA 后端
 
-> 职责:为多属主提供一条共享硬件 I2C1 总线,整个事务由中断推进。
+> 职责:为多属主提供一条共享硬件 I2C1 总线,整个事务主要由中断推进。以下 2026-11-15 修订说明优先于旧版历史描述。
 
 ## 硬件映射
 
@@ -25,7 +25,7 @@ DMA1 Channel7  I2C_RX
 
 1. 事务超过 75 ms 无进展 → 中止并请求总线恢复;
 2. 恢复序列(关 I2C → GPIO 接管 → 最多 9 个 SCL → 类 STOP 释放 → 重新初始化);
-3. 补启动:请求发起时若总线仍忙(`BUSY=1`),事务停在 `WAIT_BUS_IDLE`,
+3. 补启动:请求发起时若外设未完全空闲(`BUSY/MSL/START/STOP` 未清除),事务停在 `WAIT_BUS_IDLE`,
    由看门狗在总线空闲时补发 START(发起时已先做 250 µs 短暂等待;
    正常 STOP 之后不会进入这个状态)。
 
@@ -37,15 +37,13 @@ DMA1 Channel7  I2C_RX
 现在的处理分四层:
 
 0. **开事务前先清场** `i2c_prepare_start()`(每次发 START 前必调):`STAR1→STAR2`
-   读序列清掉 `ADDR`/`STOPF`;若还残留 `SB`/`BTF`(这两个只能靠读/写 DR 清,
-   会往总线发真数据)且总线不忙,则先 `i2c_peripheral_reset()`(RCC 复位 +
-   重新初始化)再发 START——这是唯一安全且彻底的清法。
+   读序列清掉 `ADDR`；STOPF 并非这样清除。外设完全空闲时若仍有异常事件/错误标志，先复位外设再启动，绝不写虚假 DATAR 数据。
 1. **正常路径一个标志都不留**:
-   - `finish()` 在 `BUSY` 或 `BTF` 置位时补一个 STOP(STOP 顺带清 `BTF`);
+   - `finish_impl()` 统一收尾，仅主机仍拥有总线且没有正在执行的 START/STOP 时发 STOP；单字节 RX 提前请求 STOP，不重复发。正常完成在 STOP/BUSY/MSL/START 清除后才发布;
    - TX-DMA 等 `BTF` 期间先关 `IT_EVT`,避免“预期中的 BTF 事件”被当成异常;
-   - ISR 在“事务已结束”时只清 `ADDR`/`STOPF` + 关 `IT_EVT`,**不请求恢复**
+   - ISR 在“事务已结束/尚待启动”时只关 `IT_EVT`,**不请求恢复**
      （否则每次正常收尾的 TX-DMA 都会把 I2C 复位一次）;
-   - 非预期状态的 `SB`/`ADDR` 各有明确处置(读 `STAR2` 清掉 / 熔断恢复)。
+   - 非预期状态的 `SB`/`ADDR`、丢失主机身份、从机 STOPF 进入错误恢复。
 2. **风暴熔断**: ISR 记录“同一状态被连续打断”的次数,超过 `I2C_API_EV_STORM_LIMIT`
    (64) 就关掉全部 I2C 中断源 + 拉 STOP + `s_recovery_requested=1`,把现场
    (`STAR1`/`STAR2`/`state`)交给下一轮看门狗恢复;
@@ -184,3 +182,15 @@ GPIO 恢复过程从不主动拉高 SCL/SDA,依靠板上的 I2C 上拉电阻完�
 实验 A/B/C/D/E 参数和错误编号说明见 [`Firmware/README.md`](../../README.md)。按相同运行条件，每个配置独立 Clean Build。首次失败以外不记录，因此若第一笔发生在初始化阶段的预期暂时 NACK，需结合时间戳与用例判断。**该记录本身仍会改变故障发生时的局部执行时长，不应当作零扰动测量。**
 
 本轮无目标编译器和板上实测，问题尚无确定根因。发布固件时应将 `DPC_I2C_FIRST_FAULT_TRACE_ENABLE=0` 以去掉这套临时诊断。
+
+## 2026-11-15：STOP/START 时序与诊断敏感故障修订（待实测）
+
+用户提供的失败 ELF 硬件断点 0x5982 及 RAM/MMIO 截图：`state=3` (WAIT_ADDR_TX)、owner=1、result=1、地址 0x3C、TX=40 05、last_progress=4933 ms、当前=5064 ms、差值=131 ms；CTLR1=0401、CTLR2=0330、STAR1/STAR2=0000、DMA6/7 未开且无 TC/TE。说明该次在写地址阶段真实停滞，软件仍 active 而硬件已空闲；调试器批量读取 DATAR/STAR1/STAR2 可能有副作用，不能据此证明 STOP 是唯一根因。首故障锁存开=1 时实测正常、关=0 时近乎不可读；两份实际 ELF/MAP 均含 LTO，IDE Other Optimization Flags 为 -flto=auto。关闭全局 LTO 链接溢出 668 B，因此保留工程优化配置。
+
+本次修订：
+- STOP 统一由 finish_impl 管理；单字节 RX 在清 ADDR 后提前发唯一 STOP，ACK=0 保持到 STOP 结束。TX/多字节 RX 仅主机仍拥有总线时发 STOP，避免重复、跨事务残留和仲裁丢失后的外来 STOP。主机专用 CTLR1 命令采用明确位值写入，不复写自清 START/STOP。正常 OK/NACK 在 PE=1、START=STOP=BUSY=MSL=0 后才发布，STOP 握手最多 250 us，超时请求恢复；下一次 START 仍满足 2 us tBUF。ACK/POS 在下一次合法 START 时恢复，LAST 在 STOP 完成后清除。
+- 起始与重复 START 先发布状态；初始 START 再开 EV；TX/RX DMA 先准备计数、状态及通道，再开启请求、清 ADDR。保持错误 IRQ、400 kHz、原 DMA 通道及中断优先级。SB 阶段核对主机状态；不会在活动地址阶段由看门狗轮询 STAR2 清掉可能待处理的 ADDR。
+- 前台 begin/watchdog/recovery 使用同一 I2C 专属 PFIC 掩码（27/28/30/31），保留原使能状态，不全局屏蔽 USBPD/SysTick。看门狗锁内重读时间和状态，带符号模差比较；进度 volatile，描述符发布及 DMA 结果消费增加 RISC-V fence。恢复和事务边界只在旧事件源关闭后清 PFIC pending。风暴检测移到有效事务检查之后，避免陈旧中断误中止。
+- 错误枚举追加 15=STOP timeout、16=bus state lost；旧编号保持。STOP 超时快照在 DMA 清理后、复位前采集（与原始故障快照区别）。首次锁存默认关，先验证不依赖诊断。若重新打开锁存，必须重新对照，不能以其恢复通信作为修复验收。
+
+参考：CH32X035RM V1.9 §15.5/§15.9.1，图15-3/15-4与第189页（https://ch32-riscv-ug.github.io/CH32X035/datasheet_en/CH32X035RM.PDF）。验证状态：仅源码检查和超时算术检查；未使用 WCH 工具链构建，未板端实测。先空载冷启动/复位，连续观察两设备实时数据，确认无重复离线后才逐步加负载。若仍失败，保留失败 ELF/MAP，优先捕获写地址阶段 SCL/SDA 与状态，寄存器使用单独读取，避免 DATAR/STAR1/STAR2 自动刷新。

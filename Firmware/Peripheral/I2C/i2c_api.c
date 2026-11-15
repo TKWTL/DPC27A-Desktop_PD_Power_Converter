@@ -14,6 +14,11 @@
 #define I2C_API_BUS_FREE_MIN_US       2u
 /* Repeated START must assert SB before BTF-triggered EV IRQs are enabled. */
 #define I2C_API_RESTART_SPIN_US       250u
+/* STOP completion is a hardware handshake, bounded by the free-running timer. */
+#define I2C_API_STOP_SPIN_US          250u
+/* All four I2C-owned PFIC vectors are in word 0 on CH32X035 (27,28,30,31). */
+#define I2C_API_IRQ_MASK              ((1UL << DMA1_Channel6_IRQn) | (1UL << DMA1_Channel7_IRQn) | \
+                                       (1UL << I2C1_EV_IRQn) | (1UL << I2C1_ER_IRQn))
 
 /* 事件中断风暴熔断值：同一状态连续被 EV 中断打断超过该次数就强制中止。
  * （正常一条事务的状态切换都伴随 set_state()，绝不会连续同状态打断。） */
@@ -29,7 +34,7 @@ typedef struct
     uint16_t tx_len;
     uint8_t *rx;
     uint16_t rx_len;
-    uint32_t last_progress_ms;
+    volatile uint32_t last_progress_ms;
 } I2C_API_Transaction;
 
 static uint32_t s_clock_hz = I2C_API_DEFAULT_CLOCK_HZ;
@@ -71,8 +76,29 @@ static volatile uint8_t s_fault_scl, s_fault_sda;
  */
 static void set_state(I2C_API_State state)
 {
-    s_xfer.state = state;
     s_xfer.last_progress_ms = TIME_Millis();
+    s_xfer.state = state;
+}
+
+/* The ISR producers have the same preemption level; only the foreground
+ * needs this lock. Do not mask USBPD or SysTick. Preserve PFIC enable state. */
+static uint32_t i2c_lock(void)
+{
+    uint32_t enabled = NVIC->ISR[0] & I2C_API_IRQ_MASK;
+    NVIC->IRER[0] = I2C_API_IRQ_MASK;
+    __asm__ volatile ("fence iorw, iorw\n\tfence.i" ::: "memory");
+    return enabled;
+}
+
+static void i2c_unlock(uint32_t enabled)
+{
+    __asm__ volatile ("fence iorw, iorw" ::: "memory");
+    NVIC->IENR[0] = enabled;
+}
+
+static void i2c_fence(void)
+{
+    __asm__ volatile ("fence iorw, iorw" ::: "memory");
 }
 
 static void gpio_input_release(GPIO_TypeDef *port, uint32_t pin)
@@ -173,9 +199,8 @@ static void latch_first_fault(I2C_API_Error error, I2C_API_Result result,
     if(s_first_fault_claimed != 0u)
         return;
 
-    /* May execute in ISR or watchdog context; an interrupt may nest during
-     * a foreground claim. Set claimed first, ready last; the record is never
-     * overwritten. No UART in any IRQ path. */
+    /* ISR producers are non-preempting peers; foreground finish holds the
+     * I2C PFIC lock. Set claimed first, ready last. No UART in IRQ paths. */
     s_first_fault_claimed = 1u;
     s_first_fault.time_ms = TIME_Millis();
     s_first_fault.owner = (uint8_t)s_xfer.owner;
@@ -206,10 +231,10 @@ static void clear_i2c_error_flags(void)
 static void stop_dma(void)
 {
     I2C_DMACmd(I2C1, DISABLE);
-    I2C_DMALastTransferCmd(I2C1, DISABLE);
     DMA_Cmd(I2C_API_DMA_TX_CHANNEL, DISABLE);
     DMA_Cmd(I2C_API_DMA_RX_CHANNEL, DISABLE);
     DMA_ClearFlag(DMA1_FLAG_GL6 | DMA1_FLAG_GL7);
+    /* Keep LAST until STOP is confirmed (or the peripheral is reset). */
 }
 
 /* 只复位 I2C 外设本身（不含 GPIO 位翻转恢复）：清掉所有标志与状态机。
@@ -221,61 +246,93 @@ static void i2c_peripheral_reset(void)
 {
     I2C_ITConfig(I2C1, (uint16_t)(I2C_IT_EVT | I2C_IT_BUF | I2C_IT_ERR), DISABLE);
     stop_dma();
-    I2C_Cmd(I2C1, DISABLE);
+    I2C1->CTLR1 = 0u; /* reset path: don't replay pending START/STOP */
     RCC_APB1PeriphResetCmd(RCC_APB1Periph_I2C1, ENABLE);
     TIME_DelayUs(2u);
     RCC_APB1PeriphResetCmd(RCC_APB1Periph_I2C1, DISABLE);
     i2c_hw_init();
 }
 
-/* 开始新事务前的“清场”：把上一条事务可能留下的硬件标志处理掉。
- *
- * 返回 1 = 可以发 START；返回 0 = 总线还在别人手里，交给看门狗稍后重试。
- *
- * 哪些残留是“正常”的：
- *   - ADDR / STOPF：读 STAR1→STAR2 就没了；
- *   - BTF（TX 负载发完必然置位）和 SB（START 已生成但地址还没写）
- *     清不掉，必须复位外设；这类残留出现在被看门狗中止的事务、或
- *     TX-DMA 结束后的那一小段窗口里。
- * 旧代码不处理这些，下一次一开 IT_EVT 就被电平触发的事件中断立刻打断，
- * 形成 ~10^6 次/秒 的中断风暴。 */
-static uint8_t i2c_prepare_start(void)
+/* Only use STAR2 for idle checks outside an active data/address phase:
+ * STAR1 -> STAR2 can clear ADDR, so do not poll it during normal transfer. */
+static uint8_t i2c_bus_idle(void)
 {
-    uint16_t star1 = I2C1->STAR1;   /* 读 STAR1… */
-    uint16_t star2 = I2C1->STAR2;   /* …再读 STAR2：清 ADDR/STOPF */
-    uint16_t stale = (uint16_t)(star1 & (uint16_t)(I2C_STAR1_SB | I2C_STAR1_BTF));
+    uint16_t ctlr1 = I2C1->CTLR1;
+    return (((ctlr1 & (I2C_CTLR1_PE | I2C_CTLR1_START | I2C_CTLR1_STOP)) == I2C_CTLR1_PE) &&
+            ((I2C1->STAR2 & (I2C_STAR2_BUSY | I2C_STAR2_MSL)) == 0u)) ? 1u : 0u;
+}
 
-    if(stale == 0u)
-        return 1u;
-
-    if((star2 & I2C_STAR2_BUSY) != 0u)
-        return 0u;
-
-    i2c_peripheral_reset();
+static uint8_t wait_idle_us(uint32_t us)
+{
+    uint32_t start = TIME_Ticks32();
+    uint32_t limit = TIME_UsToTicks(us);
+    while(!i2c_bus_idle())
+    {
+        if((uint32_t)(TIME_Ticks32() - start) >= limit)
+            return 0u;
+    }
     return 1u;
 }
 
-static void finish(I2C_API_Result result, I2C_API_Error error, uint8_t request_recovery)
+/* Called under the foreground I2C lock, with all peripheral sources off.
+ * ADDR is cleared by STAR1/STAR2; STOPF is NOT. A master-only engine must
+ * never write a dummy DATAR byte to remove stale events. Reset if necessary. */
+static uint8_t i2c_prepare_start(void)
 {
-    /* STAR1 -> STAR2 is a hardware operation, not pure instrumentation:
-     * on this I2C peripheral the read sequence clears ADDR and related
-     * pending events. Previously these reads were compiled out in
-     * production builds, changing behavior along with ISR timing; this is
-     * a credible cause of the observed intermittent offline indicators,
-     * but requires an A/B hardware retest. Keep the reads in BOTH builds,
-     * before disabling DMA / generating STOP. */
-    uint16_t star1 = I2C1->STAR1;
-    uint16_t star2 = I2C1->STAR2;
+    uint16_t star1;
+    if(!i2c_bus_idle())
+        return 0u;
 
+    star1 = I2C1->STAR1;
+    (void)I2C1->STAR2;
+    if((star1 & (I2C_STAR1_SB | I2C_STAR1_ADDR | I2C_STAR1_BTF |
+                 I2C_STAR1_STOPF | I2C_STAR1_RXNE | I2C_API_ERROR_MASK)) != 0u)
+    {
+        i2c_peripheral_reset();
+        TIME_DelayUs(I2C_API_BUS_FREE_MIN_US);
+    }
+    if(!i2c_bus_idle())
+        return 0u;
+
+    /* Peripheral sources have been disabled; clear old PFIC pending bits
+     * before publishing START. Never clear pending after the new START. */
+    NVIC->IPRR[0] = I2C_API_IRQ_MASK;
+    i2c_fence();
+    return 1u;
+}
+
+/* Master-only CTLR1 configuration: PE on, POS=0, no SMBus/PEC options.
+ * Do not read-modify-write self-clearing START/STOP bits. */
+static void request_stop(uint16_t ack)
+{
+    I2C1->CTLR1 = (uint16_t)(I2C_CTLR1_PE | (ack & I2C_CTLR1_ACK) |
+                             I2C_CTLR1_STOP);
+}
+
+static I2C_API_Error error_from_star1(uint16_t star1)
+{
+    /* Fatal bus errors win over a coincident NACK. */
+    if(star1 & I2C_STAR1_ARLO) return I2C_API_ERR_ARLO;
+    if(star1 & I2C_STAR1_BERR) return I2C_API_ERR_BERR;
+    if(star1 & I2C_STAR1_OVR)  return I2C_API_ERR_OVR;
+    if(star1 & I2C_STAR1_AF)   return I2C_API_ERR_NACK;
+    return I2C_API_ERR_NONE;
+}
+
+static void record_terminal(I2C_API_Result result, I2C_API_Error error,
+                            uint8_t event_storm, uint16_t star1, uint16_t star2)
+{
 #if DPC_I2C_FIRST_FAULT_TRACE_ENABLE
     if(error != I2C_API_ERR_NONE)
-        latch_first_fault(error, result, 0u, star1, star2);
+        latch_first_fault(error, result, event_storm, star1, star2);
 #endif
 #if DPC_I2C_SNAPSHOT_ACTIVE
     if(error != I2C_API_ERR_NONE)
     {
         I2C_API_RecoveryCause cause = I2C_API_RECOVERY_I2C_ERROR;
-        if(result == I2C_API_RESULT_TIMEOUT)
+        if(event_storm)
+            cause = I2C_API_RECOVERY_EVENT_STORM;
+        else if(result == I2C_API_RESULT_TIMEOUT)
             cause = I2C_API_RECOVERY_TIMEOUT;
         else if((error == I2C_API_ERR_TX_DMA) || (error == I2C_API_ERR_RX_DMA))
             cause = I2C_API_RECOVERY_DMA_ERROR;
@@ -287,68 +344,166 @@ static void finish(I2C_API_Result result, I2C_API_Error error, uint8_t request_r
         s_last_star1 = star1;
         s_last_star2 = star2;
     }
-#else
-    (void)error; /* Error classification omitted, not hardware maintenance. */
+#endif
+    (void)result;
+    (void)error;
+    (void)event_storm;
     (void)star1;
     (void)star2;
-#endif
+}
 
-    stop_dma();
-    I2C_AcknowledgeConfig(I2C1, ENABLE);
-    I2C_NACKPositionConfig(I2C1, I2C_NACKPosition_Current);
+/* One terminal hardware owner. ISR peers cannot preempt each other; the
+ * watchdog calls this while holding the I2C-only PFIC lock. */
+static void finish_impl(I2C_API_Result result, I2C_API_Error error,
+                        uint8_t request_recovery, uint8_t event_storm)
+{
+    uint16_t star1;
+    uint16_t star2;
+    uint16_t ctlr1;
+    uint8_t early_stop;
 
-    if(((I2C1->STAR2 & I2C_STAR2_BUSY) != 0u) ||
-       ((I2C1->STAR1 & I2C_STAR1_BTF) != 0u))
-        I2C_GenerateSTOP(I2C1, ENABLE);   /* STOP 同时会清掉 BTF */
+    if(s_xfer.result != I2C_API_RESULT_ACTIVE)
+        return;
 
-    /* Every transaction step is interrupt-driven: shut all sources down before
-     * the terminal result is published. */
+    /* Both diagnostic and lean builds perform the same ordered MMIO reads. */
+    star1 = I2C1->STAR1;
+    star2 = I2C1->STAR2;
+    ctlr1 = I2C1->CTLR1;
+    early_stop = (s_xfer.state == I2C_API_STATE_WAIT_RX_SINGLE) ? 1u : 0u;
+
+    /* A successful DMA completion is not sufficient if an I2C error is
+     * pending. ER and DMA IRQs have different subpriorities. */
+    if(result == I2C_API_RESULT_OK && (star1 & I2C_API_ERROR_MASK) != 0u)
+    {
+        error = error_from_star1(star1);
+        result = (error == I2C_API_ERR_NACK) ? I2C_API_RESULT_NACK : I2C_API_RESULT_ERROR;
+        if(error != I2C_API_ERR_NACK)
+            request_recovery = 1u;
+    }
+
+    /* A TX/RX-DMA success needs ownership of the bus before the sole STOP.
+     * The one-byte path already issued STOP before reading RXNE. */
+    if((result == I2C_API_RESULT_OK && !early_stop &&
+        ((star2 & I2C_STAR2_MSL) == 0u || (ctlr1 & I2C_CTLR1_STOP) != 0u)) ||
+       (result == I2C_API_RESULT_TIMEOUT &&
+        (s_xfer.state == I2C_API_STATE_WAIT_ADDR_TX || s_xfer.state == I2C_API_STATE_WAIT_ADDR_RX) &&
+        (star1 & I2C_API_ERROR_MASK) == 0u &&
+        (star2 & (I2C_STAR2_BUSY | I2C_STAR2_MSL)) == 0u &&
+        (ctlr1 & (I2C_CTLR1_START | I2C_CTLR1_STOP)) == 0u))
+    {
+        if(result == I2C_API_RESULT_OK)
+            result = I2C_API_RESULT_ERROR;
+        error = I2C_API_ERR_BUS_STATE;
+        request_recovery = 1u;
+    }
+
+    record_terminal(result, error, event_storm, star1, star2);
     I2C_ITConfig(I2C1, (uint16_t)(I2C_IT_EVT | I2C_IT_BUF | I2C_IT_ERR), DISABLE);
+    stop_dma();
+
+    /* STOP may already be in flight (one-byte RX or hardware error).
+     * Do not replay it and do not modify ACK/POS while it is pending. On
+     * arbitration loss we do not own the bus; never generate a foreign STOP. */
+    if(!early_stop)
+    {
+        /* Recheck live ownership immediately before issuing the command. */
+        uint16_t live1 = I2C1->STAR1;
+        uint16_t live2 = I2C1->STAR2;
+        ctlr1 = I2C1->CTLR1;
+        if((live2 & I2C_STAR2_MSL) != 0u &&
+           ((star1 | live1) & I2C_STAR1_ARLO) == 0u)
+        {
+            if((ctlr1 & (I2C_CTLR1_START | I2C_CTLR1_STOP)) == 0u)
+                request_stop(ctlr1);
+            else if((ctlr1 & I2C_CTLR1_START) != 0u)
+                request_recovery = 1u;
+        }
+        else if(result == I2C_API_RESULT_OK)
+        {
+            error = error_from_star1(live1);
+            if(error == I2C_API_ERR_NONE)
+                error = I2C_API_ERR_BUS_STATE;
+            result = (error == I2C_API_ERR_NACK) ? I2C_API_RESULT_NACK : I2C_API_RESULT_ERROR;
+            request_recovery = 1u;
+            record_terminal(result, error, event_storm, live1, live2);
+        }
+    }
+
+    /* No normal success or NACK is published until hardware actually
+     * finishes STOP. Known fatal errors can go straight to recovery. */
+    if(!request_recovery)
+    {
+        if(!wait_idle_us(I2C_API_STOP_SPIN_US))
+        {
+            star1 = I2C1->STAR1;
+            star2 = I2C1->STAR2;
+            result = I2C_API_RESULT_TIMEOUT;
+            error = I2C_API_ERR_STOP;
+            request_recovery = 1u;
+            /* This late failure is captured after DMA shutdown, before reset. */
+            record_terminal(result, error, event_storm, star1, star2);
+        }
+        else
+        {
+            I2C_API_Error late_error;
+            I2C_DMALastTransferCmd(I2C1, DISABLE);
+            star1 = I2C1->STAR1;
+            late_error = error_from_star1(star1);
+            /* Don't clear an error that arrived while STOP was in flight
+             * and then publish OK. Preserve a previously recorded NACK. */
+            if(late_error != I2C_API_ERR_NONE &&
+               (result == I2C_API_RESULT_OK || late_error != I2C_API_ERR_NACK))
+            {
+                star2 = I2C1->STAR2;
+                result = (late_error == I2C_API_ERR_NACK) ? I2C_API_RESULT_NACK : I2C_API_RESULT_ERROR;
+                error = late_error;
+                if(error != I2C_API_ERR_NACK)
+                    request_recovery = 1u;
+                record_terminal(result, error, event_storm, star1, star2);
+            }
+        }
+    }
+    if(request_recovery && result == I2C_API_RESULT_OK)
+    {
+        result = I2C_API_RESULT_ERROR;
+        error = I2C_API_ERR_BUS_STATE;
+        record_terminal(result, error, event_storm, star1, star2);
+    }
 
     clear_i2c_error_flags();
-    /* STAR1→STAR2 读序列：把可能残留的 ADDR/STOPF 清掉，否则下一次
-     * start_transaction() 一使能 IT_EVT 就会被电平触发的事件中断立即重入。 */
     (void)I2C1->STAR1;
     (void)I2C1->STAR2;
-    s_xfer.state = I2C_API_STATE_IDLE;
-    s_xfer.result = result;
+    /* Quiescent I2C and DMA: discard stale, not newly-created, IRQs. */
+    i2c_fence();
+    NVIC->IPRR[0] = I2C_API_IRQ_MASK;
     if(request_recovery)
         s_recovery_requested = 1u;
+    s_xfer.state = I2C_API_STATE_IDLE;
+    i2c_fence(); /* DMA writes and cleanup precede terminal result publication. */
+    s_xfer.result = result;
+}
+
+static void finish(I2C_API_Result result, I2C_API_Error error, uint8_t request_recovery)
+{
+    finish_impl(result, error, request_recovery, 0u);
 }
 
 static void start_transaction(void)
 {
-    /* 先置状态再开中断：SB 可能在 GenerateSTART 之后的一两个指令内就到了，
-     * 那时状态机必须已经是 WAIT_START_TX。 */
     set_state(I2C_API_STATE_WAIT_START_TX);
-    I2C_AcknowledgeConfig(I2C1, ENABLE);
-    I2C_NACKPositionConfig(I2C1, I2C_NACKPosition_Current);
+    i2c_fence();
+    /* Previous STOP/START cleared and bus free. Restore ACK and POS=0
+     * as part of a single command write; arm EV only after requesting START. */
+    I2C1->CTLR1 = (uint16_t)(I2C_CTLR1_PE | I2C_CTLR1_ACK | I2C_CTLR1_START);
     I2C_ITConfig(I2C1, (uint16_t)(I2C_IT_EVT | I2C_IT_ERR), ENABLE);
-    I2C_GenerateSTART(I2C1, ENABLE);
 }
 
-/* The bus is normally free right after our own STOP.  Wait briefly for BUSY to
- * clear; if it is still busy afterwards the transaction rests in
- * WAIT_BUS_IDLE and the 10 ms watchdog retries the start. */
 static uint8_t wait_bus_free(void)
 {
-    uint32_t elapsed_us = 0u;
-
-    while((I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY) != RESET) &&
-          (elapsed_us < I2C_API_BUS_FREE_SPIN_US))
-    {
-        TIME_DelayUs(1u);
-        ++elapsed_us;
-    }
-
-    if(I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY) != RESET)
+    if(!wait_idle_us(I2C_API_BUS_FREE_SPIN_US))
         return 0u;
-
-    /* BUSY=0 is not itself a guarantee that the I2C Fast-mode STOP->START
-     * minimum bus-free period has elapsed. This is a protocol requirement,
-     * not a debug-dependent delay; recheck BUSY in case of external activity. */
     TIME_DelayUs(I2C_API_BUS_FREE_MIN_US);
-    return (I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY) == RESET) ? 1u : 0u;
+    return i2c_bus_idle();
 }
 
 static uint8_t begin(I2C_API_Owner owner,
@@ -358,6 +513,8 @@ static uint8_t begin(I2C_API_Owner owner,
                      uint8_t *rx,
                      uint16_t rx_len)
 {
+    uint32_t irq_enabled;
+
     if(owner == I2C_API_OWNER_NONE || address_7bit > 0x7Fu)
         return 0u;
     if(s_xfer.owner != I2C_API_OWNER_NONE || s_xfer.result != I2C_API_RESULT_IDLE)
@@ -369,13 +526,16 @@ static uint8_t begin(I2C_API_Owner owner,
     if(rx_len != 0u && rx == 0)
         return 0u;
 
+    irq_enabled = i2c_lock();
     s_xfer.owner = owner;
-    s_xfer.result = I2C_API_RESULT_ACTIVE;
     s_xfer.address_7bit = address_7bit;
     s_xfer.tx = tx;
     s_xfer.tx_len = tx_len;
     s_xfer.rx = rx;
     s_xfer.rx_len = rx_len;
+    set_state(I2C_API_STATE_WAIT_BUS_IDLE);
+    i2c_fence(); /* publish descriptor and sender buffer before ACTIVE */
+    s_xfer.result = I2C_API_RESULT_ACTIVE;
 #if DPC_I2C_SNAPSHOT_ACTIVE
     s_last_error = I2C_API_ERR_NONE;
 #endif
@@ -384,11 +544,7 @@ static uint8_t begin(I2C_API_Owner owner,
     {
         start_transaction();
     }
-    else
-    {
-        set_state(I2C_API_STATE_WAIT_BUS_IDLE);
-    }
-
+    i2c_unlock(irq_enabled);
     return 1u;
 }
 
@@ -414,10 +570,11 @@ static void start_tx_dma(void)
     DMA_Init(I2C_API_DMA_TX_CHANNEL, &dma);
 
     I2C_DMALastTransferCmd(I2C1, DISABLE);
-    I2C_DMACmd(I2C1, ENABLE);
     DMA_ITConfig(I2C_API_DMA_TX_CHANNEL, (uint32_t)(DMA_IT_TC | DMA_IT_TE), ENABLE);
-    DMA_Cmd(I2C_API_DMA_TX_CHANNEL, ENABLE);
     set_state(I2C_API_STATE_WAIT_TX_DMA);
+    i2c_fence();
+    DMA_Cmd(I2C_API_DMA_TX_CHANNEL, ENABLE);
+    I2C_DMACmd(I2C1, ENABLE);
 }
 
 static void start_rx_dma(void)
@@ -442,12 +599,13 @@ static void start_rx_dma(void)
     DMA_Init(I2C_API_DMA_RX_CHANNEL, &dma);
 
     /* LAST makes the peripheral NACK the final DMA byte. */
-    I2C_AcknowledgeConfig(I2C1, ENABLE);
+    /* ACK already set during SB, before the receiver address. */
     I2C_DMALastTransferCmd(I2C1, ENABLE);
-    I2C_DMACmd(I2C1, ENABLE);
     DMA_ITConfig(I2C_API_DMA_RX_CHANNEL, (uint32_t)(DMA_IT_TC | DMA_IT_TE), ENABLE);
-    DMA_Cmd(I2C_API_DMA_RX_CHANNEL, ENABLE);
     set_state(I2C_API_STATE_WAIT_RX_DMA);
+    i2c_fence();
+    DMA_Cmd(I2C_API_DMA_RX_CHANNEL, ENABLE);
+    I2C_DMACmd(I2C1, ENABLE);
 }
 
 /*
@@ -469,31 +627,16 @@ static void clear_addr_flag(void)
 
 static uint8_t handle_error_flags(void)
 {
-    uint16_t star1 = I2C1->STAR1;
+    I2C_API_Error error = error_from_star1(I2C1->STAR1);
+    if(error == I2C_API_ERR_NONE)
+        return 0u;
 
-    if((star1 & I2C_STAR1_AF) != 0u)
-    {
-        finish(I2C_API_RESULT_NACK, I2C_API_ERR_NACK, 0u);
-        return 1u;
-    }
-    if((star1 & I2C_STAR1_BERR) != 0u)
-    {
-        finish(I2C_API_RESULT_ERROR, I2C_API_ERR_BERR, 1u);
-        return 1u;
-    }
-    if((star1 & I2C_STAR1_ARLO) != 0u)
-    {
-        finish(I2C_API_RESULT_ERROR, I2C_API_ERR_ARLO, 1u);
-        return 1u;
-    }
-    if((star1 & I2C_STAR1_OVR) != 0u)
-    {
-        finish(I2C_API_RESULT_ERROR, I2C_API_ERR_OVR, 1u);
-        return 1u;
-    }
-    return 0u;
+    if(error == I2C_API_ERR_NACK)
+        finish(I2C_API_RESULT_NACK, error, 0u);
+    else
+        finish(I2C_API_RESULT_ERROR, error, 1u);
+    return 1u;
 }
-
 
 static I2C_API_Error timeout_error_for_state(I2C_API_State state)
 {
@@ -516,8 +659,9 @@ static void bus_recover(void)
 {
     uint8_t i;
 
+    I2C_ITConfig(I2C1, (uint16_t)(I2C_IT_EVT | I2C_IT_BUF | I2C_IT_ERR), DISABLE);
     stop_dma();
-    I2C_Cmd(I2C1, DISABLE);
+    I2C1->CTLR1 = 0u; /* reset path: don't replay pending START/STOP */
     RCC_APB1PeriphResetCmd(RCC_APB1Periph_I2C1, ENABLE);
     TIME_DelayUs(2u);
     RCC_APB1PeriphResetCmd(RCC_APB1Periph_I2C1, DISABLE);
@@ -550,6 +694,8 @@ static void bus_recover(void)
     TIME_DelayUs(I2C_API_BUS_RECOVERY_PULSE_US);
 
     i2c_hw_init();
+    NVIC->IPRR[0] = I2C_API_IRQ_MASK;
+    i2c_fence();
 #if DPC_I2C_SNAPSHOT_ACTIVE
     s_recovery_count++;
 #endif
@@ -655,36 +801,7 @@ uint8_t I2C_API_TryWriteRead(I2C_API_Owner owner,
  * 最后表现为“停在某页 → IWDG 复位”。 */
 static void i2c_abort_event_storm(I2C_API_Error error)
 {
-    /* Preserve the same ordered status-register read sequence in both
-     * builds; do not make fault recovery depend on a logging option. */
-    uint16_t star1 = I2C1->STAR1;
-    uint16_t star2 = I2C1->STAR2;
-
-#if DPC_I2C_FIRST_FAULT_TRACE_ENABLE
-    latch_first_fault(error, I2C_API_RESULT_TIMEOUT, 1u, star1, star2);
-#endif
-#if DPC_I2C_SNAPSHOT_ACTIVE
-    snapshot(error, I2C_API_RECOVERY_EVENT_STORM,
-             I2C_API_RESULT_TIMEOUT, star1, star2);
-#else
-    (void)error;
-    (void)star1;
-#endif
-
-    I2C_ITConfig(I2C1, (uint16_t)(I2C_IT_EVT | I2C_IT_BUF | I2C_IT_ERR), DISABLE);
-    stop_dma();
-
-    if((star2 & I2C_STAR2_BUSY) != 0u)
-        I2C_GenerateSTOP(I2C1, ENABLE);
-
-    clear_i2c_error_flags();
-    s_recovery_requested = 1u;
-
-    if(s_xfer.result == I2C_API_RESULT_ACTIVE)
-    {
-        s_xfer.state = I2C_API_STATE_IDLE;
-        s_xfer.result = I2C_API_RESULT_TIMEOUT;
-    }
+    finish_impl(I2C_API_RESULT_TIMEOUT, error, 1u, 1u);
 }
 
 void I2C_API_EV_IRQHandler(void)
@@ -693,6 +810,16 @@ void I2C_API_EV_IRQHandler(void)
     static uint32_t storm_entries;
     I2C_API_State state_now = s_xfer.state;
     uint16_t star1;
+
+    /* A stale PFIC event must never abort a completed/deferred transaction. */
+    if(s_xfer.result != I2C_API_RESULT_ACTIVE ||
+       state_now == I2C_API_STATE_WAIT_BUS_IDLE)
+    {
+        storm_state = I2C_API_STATE_IDLE;
+        storm_entries = 0u;
+        I2C_ITConfig(I2C1, (uint16_t)I2C_IT_EVT, DISABLE);
+        return;
+    }
 
     /* ---- 风暴熔断：同一状态被事件中断反复打断 => 有标志清不掉 ---- */
     if(state_now == storm_state)
@@ -713,42 +840,40 @@ void I2C_API_EV_IRQHandler(void)
     }
 
     star1 = I2C1->STAR1;
-
-    if(s_xfer.result != I2C_API_RESULT_ACTIVE)
+    if((star1 & I2C_API_ERROR_MASK) != 0u)
     {
-        /* 事务已经结束（正常收尾 / 看门狗中止）但还有事件中断进来：
-         * ADDR/STOPF 靠上面那次 STAR1 读 + 这里的 STAR2 读清掉；SB/BTF 不能
-         * 在这里清（只能靠读/写 DR，会往总线发真数据），它们会在下一次
-         * start 前由 i2c_prepare_start() 通过“外设复位”处理。
-         * 这里只要把中断源关掉就行——绝不能熔断/请求恢复，否则正常收尾的
-         * TX-DMA 事务（结束时 BTF 必然置位）会把 I2C 反复复位。 */
-        (void)I2C1->STAR2;                             /* 清 ADDR/STOPF */
-        I2C_ITConfig(I2C1, (uint16_t)I2C_IT_EVT, DISABLE);
+        (void)handle_error_flags();
         return;
     }
 
     if((star1 & I2C_STAR1_SB) != 0u)
     {
+        /* SB precedes any address bytes, so STAR2 is safe to read here.
+         * Never issue an address into an already-lost master transaction. */
+        if((I2C1->STAR2 & I2C_STAR2_MSL) == 0u ||
+           (I2C1->CTLR1 & (I2C_CTLR1_START | I2C_CTLR1_STOP)) != 0u)
+        {
+            finish(I2C_API_RESULT_ERROR, I2C_API_ERR_BUS_STATE, 1u);
+            return;
+        }
+
         if(s_xfer.state == I2C_API_STATE_WAIT_START_TX)
         {
+            set_state(I2C_API_STATE_WAIT_ADDR_TX);
             I2C_Send7bitAddress(I2C1,
                                 (uint8_t)(s_xfer.address_7bit << 1),
                                 I2C_Direction_Transmitter);
-            set_state(I2C_API_STATE_WAIT_ADDR_TX);
         }
         else if(s_xfer.state == I2C_API_STATE_WAIT_START_RX)
         {
             /* For a one-byte receive ACK must already be low when ADDR is
              * cleared; DMA receives keep ACK enabled and use LAST. */
-            if(s_xfer.rx_len == 1u)
-                I2C_AcknowledgeConfig(I2C1, DISABLE);
-            else
-                I2C_AcknowledgeConfig(I2C1, ENABLE);
-
+            I2C1->CTLR1 = (uint16_t)(I2C_CTLR1_PE |
+                                      ((s_xfer.rx_len == 1u) ? 0u : I2C_CTLR1_ACK));
+            set_state(I2C_API_STATE_WAIT_ADDR_RX);
             I2C_Send7bitAddress(I2C1,
                                 (uint8_t)(s_xfer.address_7bit << 1),
                                 I2C_Direction_Receiver);
-            set_state(I2C_API_STATE_WAIT_ADDR_RX);
         }
         else
         {
@@ -767,21 +892,18 @@ void I2C_API_EV_IRQHandler(void)
              * belongs to DMA1 CH6, not EV, exactly like RX belongs to CH7.
              * Mask EVT before releasing ADDR, while retaining ERR interrupts.
              * CH6 will re-enable EVT only after the repeated START has SB. */
-            if(s_xfer.tx_len != 0u)
-                I2C_ITConfig(I2C1, (uint16_t)I2C_IT_EVT, DISABLE);
-            clear_addr_flag();
-
+            I2C_ITConfig(I2C1, (uint16_t)I2C_IT_EVT, DISABLE);
             if(s_xfer.tx_len != 0u)
             {
+                /* Arm DMA before releasing ADDR. The receiver path already
+                 * used this handshake. */
                 start_tx_dma();
-            }
-            else if(s_xfer.rx_len != 0u)
-            {
-                I2C_GenerateSTART(I2C1, ENABLE);
-                set_state(I2C_API_STATE_WAIT_START_RX);
+                clear_addr_flag();
             }
             else
             {
+                /* Public API only allows zero TX length for a ping. */
+                clear_addr_flag();
                 finish(I2C_API_RESULT_OK, I2C_API_ERR_NONE, 0u);
             }
         }
@@ -796,17 +918,20 @@ void I2C_API_EV_IRQHandler(void)
                  * writing the data register. */
                 uint32_t guard = 200000u;
 
-                clear_addr_flag();
-                I2C_GenerateSTOP(I2C1, ENABLE);
+                I2C_ITConfig(I2C1, (uint16_t)I2C_IT_EVT, DISABLE);
                 set_state(I2C_API_STATE_WAIT_RX_SINGLE);
+                clear_addr_flag();
+                request_stop(0u); /* sole STOP for a one-byte RX; keep ACK=0 */
 
-                while(((I2C1->STAR1 & I2C_STAR1_RXNE) == 0u) && guard)
+                while(((I2C1->STAR1 & (I2C_STAR1_RXNE | I2C_API_ERROR_MASK)) == 0u) && guard)
                     --guard;
+
+                if(handle_error_flags())
+                    return;
 
                 if((I2C1->STAR1 & I2C_STAR1_RXNE) != 0u)
                 {
                     s_xfer.rx[0] = I2C_ReceiveData(I2C1);
-                    I2C_AcknowledgeConfig(I2C1, ENABLE);
                     finish(I2C_API_RESULT_OK, I2C_API_ERR_NONE, 0u);
                 }
                 else
@@ -831,25 +956,24 @@ void I2C_API_EV_IRQHandler(void)
         }
         else
         {
-            /* ADDR 落在非预期状态：读一次 STAR2 清掉即可（状态机会由看门狗收尾） */
-            (void)I2C1->STAR2;
+            /* Unexpected ADDR is a state-machine fault, not normal progress. */
+            finish(I2C_API_RESULT_ERROR, I2C_API_ERR_BUS_STATE, 1u);
         }
         return;
     }
 
-    /* 到这里剩下的事件标志状态机都没在等：STOPF 读一次 STAR2 就没了；
-     * BTF 清不掉，但也不该在这里熔断（TX-DMA 正常结束时 BTF 必然置位），
-     * 让它随本次事务收尾的 STOP / 重复 START 消失，真赖着不走则由下一次
-     * i2c_prepare_start() 的外设复位清掉——上面的风暴熔断只当最后兑底。 */
+    /* STOPF is a slave-mode event; STAR2 does not clear it. In this
+     * master-only engine recover instead of writing CTLR1 during a command. */
     if((star1 & I2C_STAR1_STOPF) != 0u)
-        (void)I2C1->STAR2;
+        finish(I2C_API_RESULT_ERROR, I2C_API_ERR_BUS_STATE, 1u);
 }
 
 void I2C_API_ER_IRQHandler(void)
 {
-    if(s_xfer.result != I2C_API_RESULT_ACTIVE)
+    if(s_xfer.result != I2C_API_RESULT_ACTIVE ||
+       s_xfer.state == I2C_API_STATE_WAIT_BUS_IDLE)
     {
-        /* Stray error with no active transaction: just clear it. */
+        /* Stray error with no started transaction: just clear it. */
         clear_i2c_error_flags();
         I2C_ClearITPendingBit(I2C1, I2C_IT_PECERR);
         return;
@@ -901,8 +1025,11 @@ void I2C_API_TxDMA_IRQHandler(void)
      * 这段窗口里冲进来，把 BTF 留成“事务已结束却还挂着的事件标志”
      * （旧代码下一次开 IT_EVT 时就是被它打成风暴的）。 */
     I2C_ITConfig(I2C1, (uint16_t)I2C_IT_EVT, DISABLE);
-    while(((I2C1->STAR1 & I2C_STAR1_BTF) == 0u) && guard)
+    while(((I2C1->STAR1 & (I2C_STAR1_BTF | I2C_API_ERROR_MASK)) == 0u) && guard)
         --guard;
+
+    if(handle_error_flags())
+        return;
 
     /* DMA TC only means DATAR was loaded, not that the last bit/ACK left
      * the wire. Never start another transfer or report success without BTF. */
@@ -920,13 +1047,21 @@ void I2C_API_TxDMA_IRQHandler(void)
         /* With TX BTF still set, enabling EVT before START/SB recreates a
          * stale-BTF interrupt storm. Arm START with EVT masked; wait for the
          * hardware SB flag before granting the address phase to EV. */
+        if((I2C1->STAR2 & I2C_STAR2_MSL) == 0u ||
+           (I2C1->CTLR1 & (I2C_CTLR1_START | I2C_CTLR1_STOP)) != 0u)
+        {
+            finish(I2C_API_RESULT_ERROR, I2C_API_ERR_BUS_STATE, 1u);
+            return;
+        }
         set_state(I2C_API_STATE_WAIT_START_RX);
         start_ticks = TIME_Ticks32();
-        I2C_GenerateSTART(I2C1, ENABLE);
-        while(((I2C1->STAR1 & I2C_STAR1_SB) == 0u) &&
+        I2C1->CTLR1 = (uint16_t)(I2C_CTLR1_PE | I2C_CTLR1_ACK | I2C_CTLR1_START);
+        while(((I2C1->STAR1 & (I2C_STAR1_SB | I2C_API_ERROR_MASK)) == 0u) &&
               ((uint32_t)(TIME_Ticks32() - start_ticks) < max_ticks))
         {
         }
+        if(handle_error_flags())
+            return;
         if((I2C1->STAR1 & I2C_STAR1_SB) == 0u)
         {
             finish(I2C_API_RESULT_TIMEOUT, I2C_API_ERR_START_RX, 1u);
@@ -964,28 +1099,32 @@ void I2C_API_RxDMA_IRQHandler(void)
     DMA_ClearITPendingBit(DMA1_IT_TC7);
     DMA_Cmd(I2C_API_DMA_RX_CHANNEL, DISABLE);
     DMA_ClearFlag(DMA1_FLAG_GL7);
-    I2C_DMACmd(I2C1, DISABLE);
-    I2C_DMALastTransferCmd(I2C1, DISABLE);
-    I2C_GenerateSTOP(I2C1, ENABLE);
-    I2C_AcknowledgeConfig(I2C1, ENABLE);
+    /* Keep LAST/ACK until the common terminal path completes STOP. */
     finish(I2C_API_RESULT_OK, I2C_API_ERR_NONE, 0u);
 }
 
 void I2C_API_WatchdogService(uint32_t now_ms)
 {
+    uint32_t irq_enabled;
+    uint32_t progress;
+
+    (void)now_ms; /* caller's sample can be older than an ISR's progress */
+    if(s_xfer.result != I2C_API_RESULT_ACTIVE && !s_recovery_requested)
+        return;
+
+    irq_enabled = i2c_lock();
     if(s_xfer.result == I2C_API_RESULT_ACTIVE)
     {
-        if((uint32_t)(now_ms - s_xfer.last_progress_ms) > I2C_API_WATCHDOG_TIMEOUT_MS)
+        /* Re-sample under the same lock that owns finish. Signed modular
+         * difference rejects a newer progress timestamp and handles wrap
+         * (all valid transaction ages are far below 2^31 ms). */
+        progress = s_xfer.last_progress_ms;
+        if((int32_t)(TIME_Millis() - progress) > (int32_t)I2C_API_WATCHDOG_TIMEOUT_MS)
         {
             finish(I2C_API_RESULT_TIMEOUT, timeout_error_for_state(s_xfer.state), 1u);
         }
-        else if((s_xfer.state == I2C_API_STATE_WAIT_BUS_IDLE) &&
-                (I2C_GetFlagStatus(I2C1, I2C_FLAG_BUSY) == RESET))
+        else if(s_xfer.state == I2C_API_STATE_WAIT_BUS_IDLE && i2c_bus_idle())
         {
-            /* Rare deferred start: the bus was still busy when the caller
-             * requested the transaction and no event interrupt will come. */
-            /* Deferred BUSY recovery must obey the same tBUF check as
-             * begin(), rather than bypassing it on this watchdog path. */
             if(wait_bus_free() && i2c_prepare_start())
                 start_transaction();
         }
@@ -993,6 +1132,7 @@ void I2C_API_WatchdogService(uint32_t now_ms)
 
     if(s_recovery_requested && s_xfer.result != I2C_API_RESULT_ACTIVE)
         bus_recover();
+    i2c_unlock(irq_enabled);
 }
 
 uint8_t I2C_API_IsBusy(void)
@@ -1009,7 +1149,10 @@ I2C_API_Result I2C_API_GetResult(I2C_API_Owner owner)
 {
     if(owner == I2C_API_OWNER_NONE || s_xfer.owner != owner)
         return I2C_API_RESULT_IDLE;
-    return s_xfer.result;
+    I2C_API_Result result = s_xfer.result;
+    if(result != I2C_API_RESULT_ACTIVE)
+        i2c_fence();
+    return result;
 }
 
 I2C_API_Result I2C_API_TakeResult(I2C_API_Owner owner)
@@ -1022,13 +1165,15 @@ I2C_API_Result I2C_API_TakeResult(I2C_API_Owner owner)
         return I2C_API_RESULT_ACTIVE;
 
     result = s_xfer.result;
-    s_xfer.owner = I2C_API_OWNER_NONE;
-    s_xfer.result = I2C_API_RESULT_IDLE;
+    i2c_fence(); /* acquire completed single-byte or DMA RX data */
     s_xfer.state = I2C_API_STATE_IDLE;
     s_xfer.tx = 0;
     s_xfer.rx = 0;
     s_xfer.tx_len = 0u;
     s_xfer.rx_len = 0u;
+    s_xfer.result = I2C_API_RESULT_IDLE;
+    i2c_fence();
+    s_xfer.owner = I2C_API_OWNER_NONE;
     return result;
 }
 
@@ -1075,6 +1220,8 @@ const char *I2C_API_GetLastErrorName(void)
         case I2C_API_ERR_ARLO:     return "arbitration lost";
         case I2C_API_ERR_OVR:      return "overrun";
         case I2C_API_ERR_WATCHDOG: return "watchdog timeout";
+        case I2C_API_ERR_STOP:     return "STOP timeout";
+        case I2C_API_ERR_BUS_STATE:return "bus state lost";
         default:                   return "unknown";
     }
 }

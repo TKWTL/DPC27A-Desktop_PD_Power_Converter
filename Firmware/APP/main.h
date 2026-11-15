@@ -22,7 +22,7 @@ extern "C" {
  * First-fault latch is one-shot, captured BEFORE any reporting is printed. */
 #define DPC_DIAG_I2C_SNAPSHOT_ENABLE  0
 #define DPC_DIAG_VBUS_PM_ENABLE       0
-#define DPC_I2C_FIRST_FAULT_TRACE_ENABLE 1
+#define DPC_I2C_FIRST_FAULT_TRACE_ENABLE 0  /* Lean build: verify repair without trace */
 
 #if (DPC_DIAGNOSTICS_ENABLE != 0) && (DPC_DIAGNOSTICS_ENABLE != 1)
 #error "DPC_DIAGNOSTICS_ENABLE must be 0 or 1"

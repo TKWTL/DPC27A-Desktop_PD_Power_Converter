@@ -45,7 +45,9 @@ typedef enum
     I2C_API_ERR_BERR,
     I2C_API_ERR_ARLO,
     I2C_API_ERR_OVR,
-    I2C_API_ERR_WATCHDOG
+    I2C_API_ERR_WATCHDOG,
+    I2C_API_ERR_STOP,       /* STOP / BUSY / MSL did not settle */
+    I2C_API_ERR_BUS_STATE   /* software phase no longer owns hardware bus */
 } I2C_API_Error;
 
 typedef enum
@@ -87,7 +89,7 @@ typedef struct
     uint8_t sda_high;
     uint32_t transaction_age_ms;
     uint32_t recovery_count;
-    /* All fields below are latched before DMA/I2C is stopped. */
+    /* Normally pre-cleanup; STOP timeout is captured after DMA shutdown. */
     I2C_API_RecoveryCause cause;
     uint8_t address_7bit;
     uint16_t tx_len;
@@ -107,7 +109,9 @@ typedef struct
  *   DMA1 Channel7 = I2C_RX
  *
  * Transactions are zero-copy. tx/rx buffers must remain valid until the owner
- * consumes the terminal result with I2C_API_TakeResult().
+ * consumes the terminal result with I2C_API_TakeResult(). OK is published
+ * only after STOP/START/BUSY/MSL have cleared. Foreground callers are
+ * cooperative (not concurrent threads/ISRs).
  */
 void I2C_API_Init(uint32_t clock_hz);
 uint32_t I2C_API_GetClockHz(void);
