@@ -41,32 +41,6 @@ static uint32_t s_clock_hz = I2C_API_DEFAULT_CLOCK_HZ;
 static I2C_API_Transaction s_xfer;
 static volatile uint8_t s_recovery_requested;
 
-#if DPC_I2C_FIRST_FAULT_TRACE_ENABLE
-/* Claim before filling; publish ready last. First-failure-only instrumentation
- * doesn't alter the successful I2C transaction path beyond a conditional. */
-static volatile uint8_t s_first_fault_claimed;
-static volatile uint8_t s_first_fault_ready;
-static I2C_API_FirstFault s_first_fault;
-#endif
-
-#if DPC_I2C_SNAPSHOT_ACTIVE
-static volatile I2C_API_Error s_last_error = I2C_API_ERR_NONE;
-static volatile uint16_t s_last_star1;
-static volatile uint16_t s_last_star2;
-static volatile uint32_t s_recovery_count;
-/* Fault-site snapshot survives DMA shutdown and I2C1 peripheral reset. */
-static volatile I2C_API_RecoveryCause s_fault_cause;
-static volatile I2C_API_State s_fault_state;
-static volatile I2C_API_Owner s_fault_owner;
-static volatile I2C_API_Result s_fault_result;
-static volatile uint8_t s_fault_addr;
-static volatile uint16_t s_fault_tx_len, s_fault_rx_len;
-static volatile uint16_t s_fault_tx_cnt, s_fault_rx_cnt;
-static volatile uint16_t s_fault_ctlr2;
-static volatile uint32_t s_fault_dma_rx_cfgr, s_fault_dma_intfr;
-static volatile uint32_t s_fault_age_ms;
-static volatile uint8_t s_fault_scl, s_fault_sda;
-#endif /* DPC_I2C_SNAPSHOT_ACTIVE */
 
 /*
  * The watchdog measures inactivity in the current hardware state, not total
@@ -164,61 +138,6 @@ static void i2c_hw_init(void)
     DMA_ClearFlag(DMA1_FLAG_GL6 | DMA1_FLAG_GL7);
 }
 
-#if DPC_I2C_SNAPSHOT_ACTIVE
-static void snapshot(I2C_API_Error error, I2C_API_RecoveryCause cause,
-                     I2C_API_Result result, uint16_t star1, uint16_t star2)
-{
-    /* Do not read DATAR or log inside IRQs; retain the unmodified register
-     * scene before STOP/DMA cleanup, including on event-storm aborts. */
-    s_last_error = error;
-    s_fault_cause = cause;
-    s_fault_state = s_xfer.state;
-    s_fault_owner = s_xfer.owner;
-    s_fault_result = result;
-    s_fault_addr = s_xfer.address_7bit;
-    s_fault_tx_len = s_xfer.tx_len;
-    s_fault_rx_len = s_xfer.rx_len;
-    s_last_star1 = star1;
-    s_last_star2 = star2;
-    s_fault_ctlr2 = I2C1->CTLR2;
-    s_fault_tx_cnt = (uint16_t)DMA_GetCurrDataCounter(I2C_API_DMA_TX_CHANNEL);
-    s_fault_rx_cnt = (uint16_t)DMA_GetCurrDataCounter(I2C_API_DMA_RX_CHANNEL);
-    s_fault_dma_rx_cfgr = I2C_API_DMA_RX_CHANNEL->CFGR;
-    s_fault_dma_intfr = DMA1->INTFR;
-    s_fault_scl = GPIO_ReadInputDataBit(PWR_I2C_SCL_GPIO_Port, PWR_I2C_SCL_Pin) ? 1u : 0u;
-    s_fault_sda = GPIO_ReadInputDataBit(PWR_I2C_SDA_GPIO_Port, PWR_I2C_SDA_Pin) ? 1u : 0u;
-    s_fault_age_ms = (s_xfer.result == I2C_API_RESULT_ACTIVE) ?
-                     (uint32_t)(TIME_Millis() - s_xfer.last_progress_ms) : 0u;
-}
-#endif /* DPC_I2C_SNAPSHOT_ACTIVE */
-
-#if DPC_I2C_FIRST_FAULT_TRACE_ENABLE
-static void latch_first_fault(I2C_API_Error error, I2C_API_Result result,
-                              uint8_t event_storm, uint16_t star1, uint16_t star2)
-{
-    if(s_first_fault_claimed != 0u)
-        return;
-
-    /* ISR producers are non-preempting peers; foreground finish holds the
-     * I2C PFIC lock. Set claimed first, ready last. No UART in IRQ paths. */
-    s_first_fault_claimed = 1u;
-    s_first_fault.time_ms = TIME_Millis();
-    s_first_fault.owner = (uint8_t)s_xfer.owner;
-    s_first_fault.state = (uint8_t)s_xfer.state;
-    s_first_fault.result = (uint8_t)result;
-    s_first_fault.error = (uint8_t)error;
-    s_first_fault.event_storm = event_storm;
-    s_first_fault.star1 = star1;
-    s_first_fault.star2 = star2;
-    s_first_fault.ctlr2 = I2C1->CTLR2;
-    s_first_fault.dma_intfr = DMA1->INTFR;
-    s_first_fault.tx_remaining = (uint16_t)DMA_GetCurrDataCounter(I2C_API_DMA_TX_CHANNEL);
-    s_first_fault.rx_remaining = (uint16_t)DMA_GetCurrDataCounter(I2C_API_DMA_RX_CHANNEL);
-    /* Make all recorded fields visible before the ready flag is published. */
-    __asm__ volatile ("" ::: "memory");
-    s_first_fault_ready = 1u;
-}
-#endif
 
 static void clear_i2c_error_flags(void)
 {
@@ -319,43 +238,10 @@ static I2C_API_Error error_from_star1(uint16_t star1)
     return I2C_API_ERR_NONE;
 }
 
-static void record_terminal(I2C_API_Result result, I2C_API_Error error,
-                            uint8_t event_storm, uint16_t star1, uint16_t star2)
-{
-#if DPC_I2C_FIRST_FAULT_TRACE_ENABLE
-    if(error != I2C_API_ERR_NONE)
-        latch_first_fault(error, result, event_storm, star1, star2);
-#endif
-#if DPC_I2C_SNAPSHOT_ACTIVE
-    if(error != I2C_API_ERR_NONE)
-    {
-        I2C_API_RecoveryCause cause = I2C_API_RECOVERY_I2C_ERROR;
-        if(event_storm)
-            cause = I2C_API_RECOVERY_EVENT_STORM;
-        else if(result == I2C_API_RESULT_TIMEOUT)
-            cause = I2C_API_RECOVERY_TIMEOUT;
-        else if((error == I2C_API_ERR_TX_DMA) || (error == I2C_API_ERR_RX_DMA))
-            cause = I2C_API_RECOVERY_DMA_ERROR;
-        snapshot(error, cause, result, star1, star2);
-    }
-    else
-    {
-        s_last_error = I2C_API_ERR_NONE;
-        s_last_star1 = star1;
-        s_last_star2 = star2;
-    }
-#endif
-    (void)result;
-    (void)error;
-    (void)event_storm;
-    (void)star1;
-    (void)star2;
-}
-
 /* One terminal hardware owner. ISR peers cannot preempt each other; the
  * watchdog calls this while holding the I2C-only PFIC lock. */
 static void finish_impl(I2C_API_Result result, I2C_API_Error error,
-                        uint8_t request_recovery, uint8_t event_storm)
+                        uint8_t request_recovery)
 {
     uint16_t star1;
     uint16_t star2;
@@ -365,7 +251,7 @@ static void finish_impl(I2C_API_Result result, I2C_API_Error error,
     if(s_xfer.result != I2C_API_RESULT_ACTIVE)
         return;
 
-    /* Both diagnostic and lean builds perform the same ordered MMIO reads. */
+    /* Preserve this ordered MMIO read even without fault reporting. */
     star1 = I2C1->STAR1;
     star2 = I2C1->STAR2;
     ctlr1 = I2C1->CTLR1;
@@ -397,7 +283,6 @@ static void finish_impl(I2C_API_Result result, I2C_API_Error error,
         request_recovery = 1u;
     }
 
-    record_terminal(result, error, event_storm, star1, star2);
     I2C_ITConfig(I2C1, (uint16_t)(I2C_IT_EVT | I2C_IT_BUF | I2C_IT_ERR), DISABLE);
     stop_dma();
 
@@ -425,7 +310,6 @@ static void finish_impl(I2C_API_Result result, I2C_API_Error error,
                 error = I2C_API_ERR_BUS_STATE;
             result = (error == I2C_API_ERR_NACK) ? I2C_API_RESULT_NACK : I2C_API_RESULT_ERROR;
             request_recovery = 1u;
-            record_terminal(result, error, event_storm, live1, live2);
         }
     }
 
@@ -440,8 +324,7 @@ static void finish_impl(I2C_API_Result result, I2C_API_Error error,
             result = I2C_API_RESULT_TIMEOUT;
             error = I2C_API_ERR_STOP;
             request_recovery = 1u;
-            /* This late failure is captured after DMA shutdown, before reset. */
-            record_terminal(result, error, event_storm, star1, star2);
+            /* Preserve the ordered status reads before recovery. */
         }
         else
         {
@@ -459,7 +342,6 @@ static void finish_impl(I2C_API_Result result, I2C_API_Error error,
                 error = late_error;
                 if(error != I2C_API_ERR_NACK)
                     request_recovery = 1u;
-                record_terminal(result, error, event_storm, star1, star2);
             }
         }
     }
@@ -467,7 +349,6 @@ static void finish_impl(I2C_API_Result result, I2C_API_Error error,
     {
         result = I2C_API_RESULT_ERROR;
         error = I2C_API_ERR_BUS_STATE;
-        record_terminal(result, error, event_storm, star1, star2);
     }
 
     clear_i2c_error_flags();
@@ -485,7 +366,7 @@ static void finish_impl(I2C_API_Result result, I2C_API_Error error,
 
 static void finish(I2C_API_Result result, I2C_API_Error error, uint8_t request_recovery)
 {
-    finish_impl(result, error, request_recovery, 0u);
+    finish_impl(result, error, request_recovery);
 }
 
 static void start_transaction(void)
@@ -536,9 +417,6 @@ static uint8_t begin(I2C_API_Owner owner,
     set_state(I2C_API_STATE_WAIT_BUS_IDLE);
     i2c_fence(); /* publish descriptor and sender buffer before ACTIVE */
     s_xfer.result = I2C_API_RESULT_ACTIVE;
-#if DPC_I2C_SNAPSHOT_ACTIVE
-    s_last_error = I2C_API_ERR_NONE;
-#endif
 
     if(wait_bus_free() && i2c_prepare_start())
     {
@@ -696,9 +574,6 @@ static void bus_recover(void)
     i2c_hw_init();
     NVIC->IPRR[0] = I2C_API_IRQ_MASK;
     i2c_fence();
-#if DPC_I2C_SNAPSHOT_ACTIVE
-    s_recovery_count++;
-#endif
     s_recovery_requested = 0u;
 }
 
@@ -714,15 +589,6 @@ void I2C_API_Init(uint32_t clock_hz)
     s_xfer.owner = I2C_API_OWNER_NONE;
     s_xfer.result = I2C_API_RESULT_IDLE;
     s_recovery_requested = 0u;
-#if DPC_I2C_FIRST_FAULT_TRACE_ENABLE
-    s_first_fault_claimed = 0u;
-    s_first_fault_ready = 0u;
-#endif
-#if DPC_I2C_SNAPSHOT_ACTIVE
-    s_recovery_count = 0u;
-    s_last_error = I2C_API_ERR_NONE;
-    s_fault_cause = I2C_API_RECOVERY_NONE;
-#endif
     i2c_hw_init();
 
     /* Event/error and both DMA channels carry the transaction; only the
@@ -743,10 +609,6 @@ void I2C_API_Init(uint32_t clock_hz)
     nvic.NVIC_IRQChannel = DMA1_Channel7_IRQn;
     NVIC_Init(&nvic);
 
-#if DPC_I2C_SNAPSHOT_ACTIVE
-    s_last_star1 = I2C1->STAR1;
-    s_last_star2 = I2C1->STAR2;
-#endif
 }
 
 uint32_t I2C_API_GetClockHz(void)
@@ -801,7 +663,7 @@ uint8_t I2C_API_TryWriteRead(I2C_API_Owner owner,
  * 最后表现为“停在某页 → IWDG 复位”。 */
 static void i2c_abort_event_storm(I2C_API_Error error)
 {
-    finish_impl(I2C_API_RESULT_TIMEOUT, error, 1u, 1u);
+    finish_impl(I2C_API_RESULT_TIMEOUT, error, 1u);
 }
 
 void I2C_API_EV_IRQHandler(void)
@@ -1177,81 +1039,4 @@ I2C_API_Result I2C_API_TakeResult(I2C_API_Owner owner)
     return result;
 }
 
-#if DPC_I2C_FIRST_FAULT_TRACE_ENABLE
-uint8_t I2C_API_ReadFirstFault(I2C_API_FirstFault *out)
-{
-    if((out == 0) || (s_first_fault_ready == 0u))
-        return 0u;
 
-    /* First fault is immutable once ready; acquire before copying fields. */
-    __asm__ volatile ("" ::: "memory");
-    *out = s_first_fault;
-    return 1u;
-}
-#endif
-
-#if DPC_I2C_SNAPSHOT_ACTIVE
-uint32_t I2C_API_GetRecoveryCount(void)
-{
-    return s_recovery_count;
-}
-
-I2C_API_Error I2C_API_GetLastError(void)
-{
-    return s_last_error;
-}
-
-const char *I2C_API_GetLastErrorName(void)
-{
-    switch(s_last_error)
-    {
-        case I2C_API_ERR_NONE:     return "none";
-        case I2C_API_ERR_BUS_BUSY: return "bus busy";
-        case I2C_API_ERR_START_TX: return "start TX";
-        case I2C_API_ERR_ADDR_TX:  return "address TX";
-        case I2C_API_ERR_TX_DMA:   return "TX DMA";
-        case I2C_API_ERR_TX_BTF:   return "TX BTF";
-        case I2C_API_ERR_START_RX: return "start RX";
-        case I2C_API_ERR_ADDR_RX:  return "address RX";
-        case I2C_API_ERR_RX_DMA:   return "RX DMA";
-        case I2C_API_ERR_RX:       return "RX";
-        case I2C_API_ERR_NACK:     return "NACK";
-        case I2C_API_ERR_BERR:     return "bus error";
-        case I2C_API_ERR_ARLO:     return "arbitration lost";
-        case I2C_API_ERR_OVR:      return "overrun";
-        case I2C_API_ERR_WATCHDOG: return "watchdog timeout";
-        case I2C_API_ERR_STOP:     return "STOP timeout";
-        case I2C_API_ERR_BUS_STATE:return "bus state lost";
-        default:                   return "unknown";
-    }
-}
-
-void I2C_API_GetDiagnostic(I2C_API_Diagnostic *diag)
-{
-    if(diag == 0)
-        return;
-
-    diag->error = s_last_error;
-    diag->state = s_fault_state;
-    diag->owner = s_fault_owner;
-    diag->result = s_fault_result;
-    diag->star1 = s_last_star1;
-    diag->star2 = s_last_star2;
-    diag->dma_tx_remaining = s_fault_tx_cnt;
-    diag->dma_rx_remaining = s_fault_rx_cnt;
-    /* These two pins are read after recovery, for comparison only. */
-    diag->scl_high = GPIO_ReadInputDataBit(PWR_I2C_SCL_GPIO_Port, PWR_I2C_SCL_Pin) ? 1u : 0u;
-    diag->sda_high = GPIO_ReadInputDataBit(PWR_I2C_SDA_GPIO_Port, PWR_I2C_SDA_Pin) ? 1u : 0u;
-    diag->transaction_age_ms = s_fault_age_ms;
-    diag->recovery_count = s_recovery_count;
-    diag->cause = s_fault_cause;
-    diag->address_7bit = s_fault_addr;
-    diag->tx_len = s_fault_tx_len;
-    diag->rx_len = s_fault_rx_len;
-    diag->i2c_ctlr2 = s_fault_ctlr2;
-    diag->dma_rx_cfgr = s_fault_dma_rx_cfgr;
-    diag->dma_intfr = s_fault_dma_intfr;
-    diag->fault_scl_high = s_fault_scl;
-    diag->fault_sda_high = s_fault_sda;
-}
-#endif /* DPC_I2C_SNAPSHOT_ACTIVE */

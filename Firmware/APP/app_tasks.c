@@ -67,12 +67,12 @@ THRD_DECLARE(thread_pd)
 THRD_DECLARE(thread_vbus)
 {
     static uint16_t mv;
-#if DPC_VBUS_PM_LOG_ACTIVE
+#if DPC_DIAGNOSTICS_ENABLE
     static uint8_t log_div;
     static uint32_t sleep_left;
 #endif
     THRD_BEGIN;
-#if DPC_VBUS_PM_LOG_ACTIVE
+#if DPC_DIAGNOSTICS_ENABLE
     log_div = 0u;
 #endif
     while(1)
@@ -80,7 +80,7 @@ THRD_DECLARE(thread_vbus)
         THRD_DELAY(20u);
         mv = VBUS_Sense_ReadMillivolts();
         PD_SetVbusMillivolts(mv);
-#if DPC_VBUS_PM_LOG_ACTIVE
+#if DPC_DIAGNOSTICS_ENABLE
         if(++log_div >= 50u)
         {
             log_div = 0u;
@@ -293,64 +293,11 @@ THRD_DECLARE(thread_soft_i2c_service)
 
 THRD_DECLARE(thread_i2c_watchdog)
 {
-#if DPC_DIAGNOSTICS_ENABLE
-    static uint32_t last_recovery_count;
-    static I2C_API_Diagnostic d;
-#endif
-#if DPC_I2C_FIRST_FAULT_TRACE_ENABLE
-    static I2C_API_FirstFault first_fault;
-    static uint8_t first_printed;
-#endif
     THRD_BEGIN;
-#if DPC_DIAGNOSTICS_ENABLE
-    last_recovery_count = I2C_API_GetRecoveryCount();
-#endif
-#if DPC_I2C_FIRST_FAULT_TRACE_ENABLE
-    first_printed = 0u;
-#endif
     while(1)
     {
         THRD_DELAY(10u);
         I2C_API_WatchdogService(TIME_Millis());
-#if DPC_DIAGNOSTICS_ENABLE
-        if(I2C_API_GetRecoveryCount() != last_recovery_count)
-        {
-            last_recovery_count = I2C_API_GetRecoveryCount();
-            I2C_API_GetDiagnostic(&d);
-            /* The fault snapshot is taken before DMA/I2C shutdown, whereas
-             * post-recovery SCL/SDA are sampled in GetDiagnostic(). */
-            printf("[I2C] rec#%lu %s cause=%u owner=%u addr=%02x st=%u S1=%04x S2=%04x\r\n",
-                   (unsigned long)last_recovery_count, I2C_API_GetLastErrorName(),
-                   (unsigned)d.cause, (unsigned)d.owner, (unsigned)d.address_7bit,
-                   (unsigned)d.state, (unsigned)d.star1, (unsigned)d.star2);
-            printf("[I2C] pre=%u/%u post=%u/%u rx=%u left=%u cf7=%08lx if=%08lx c2=%04x age=%lu\r\n",
-                   (unsigned)d.fault_scl_high, (unsigned)d.fault_sda_high,
-                   (unsigned)d.scl_high, (unsigned)d.sda_high,
-                   (unsigned)d.rx_len, (unsigned)d.dma_rx_remaining,
-                   (unsigned long)d.dma_rx_cfgr, (unsigned long)d.dma_intfr,
-                   (unsigned)d.i2c_ctlr2, (unsigned long)d.transaction_age_ms);
-        }
-#endif
-#if DPC_I2C_FIRST_FAULT_TRACE_ENABLE
-        /* Emit just ONE short report, and only AFTER the first failure.
-         * Does not create periodic UART traffic in the healthy path or
-         * print inside DMA/I2C interrupt handlers. */
-        if((first_printed == 0u) && I2C_API_ReadFirstFault(&first_fault))
-        {
-            first_printed = 1u;
-            printf("[I2C0] t=%lu owner=%u state=%u result=%u err=%u storm=%u\r\n",
-                   (unsigned long)first_fault.time_ms,
-                   (unsigned)first_fault.owner, (unsigned)first_fault.state,
-                   (unsigned)first_fault.result, (unsigned)first_fault.error,
-                   (unsigned)first_fault.event_storm);
-            printf("[I2C0] S1=%04x S2=%04x C2=%04x tx=%u rx=%u dma=%08lx\r\n",
-                   (unsigned)first_fault.star1, (unsigned)first_fault.star2,
-                   (unsigned)first_fault.ctlr2,
-                   (unsigned)first_fault.tx_remaining,
-                   (unsigned)first_fault.rx_remaining,
-                   (unsigned long)first_fault.dma_intfr);
-        }
-#endif
     }
     THRD_END;
 }

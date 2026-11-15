@@ -9,20 +9,13 @@ extern "C" {
 
 /* Compile-time logging policy. The three operational logs below remain
  * enabled even in the lean (DPC_DIAGNOSTICS_ENABLE=0) configuration.
- * The detailed option only owns optional VBUS/PM, I2C fault snapshots,
- * OLED-ready and CFG debug messages. All changes require a Clean Build. */
+ * The detailed option only owns optional VBUS/PM, OLED-ready and CFG debug
+ * messages. Temporary I2C fault reporting was retired. All changes require
+ * a Clean Build. */
 #define DPC_DIAGNOSTICS_ENABLE       0  /* Detailed diagnostics (default off) */
 #define DPC_LOG_STARTUP_ENABLE       1  /* Startup identity, reset, buses, PD */
 #define DPC_LOG_POWER_ALLOC_ENABLE   1  /* Only when applied power limits change */
 #define DPC_LOG_FAN_CHANGE_ENABLE    1  /* Only when fan PWM duty changes */
-
-/* Diagnostic isolation: keep master switch at 0 during A/B tests.
- * Enabling the snapshot includes ISR/register bookkeeping but NOT UART logs.
- * Enabling periodic UART restores [VBUS]/[PM] only, not I2C snapshots.
- * First-fault latch is one-shot, captured BEFORE any reporting is printed. */
-#define DPC_DIAG_I2C_SNAPSHOT_ENABLE  0
-#define DPC_DIAG_VBUS_PM_ENABLE       0
-#define DPC_I2C_FIRST_FAULT_TRACE_ENABLE 0  /* Lean build: verify repair without trace */
 
 #if (DPC_DIAGNOSTICS_ENABLE != 0) && (DPC_DIAGNOSTICS_ENABLE != 1)
 #error "DPC_DIAGNOSTICS_ENABLE must be 0 or 1"
@@ -36,19 +29,6 @@ extern "C" {
 #if (DPC_LOG_FAN_CHANGE_ENABLE != 0) && (DPC_LOG_FAN_CHANGE_ENABLE != 1)
 #error "DPC_LOG_FAN_CHANGE_ENABLE must be 0 or 1"
 #endif
-#if (DPC_DIAG_I2C_SNAPSHOT_ENABLE != 0) && (DPC_DIAG_I2C_SNAPSHOT_ENABLE != 1)
-#error "DPC_DIAG_I2C_SNAPSHOT_ENABLE must be 0 or 1"
-#endif
-#if (DPC_DIAG_VBUS_PM_ENABLE != 0) && (DPC_DIAG_VBUS_PM_ENABLE != 1)
-#error "DPC_DIAG_VBUS_PM_ENABLE must be 0 or 1"
-#endif
-#if (DPC_I2C_FIRST_FAULT_TRACE_ENABLE != 0) && (DPC_I2C_FIRST_FAULT_TRACE_ENABLE != 1)
-#error "DPC_I2C_FIRST_FAULT_TRACE_ENABLE must be 0 or 1"
-#endif
-/* I2C detailed snapshot and periodic UART are intentionally orthogonal. */
-#define DPC_I2C_SNAPSHOT_ACTIVE  (DPC_DIAGNOSTICS_ENABLE || DPC_DIAG_I2C_SNAPSHOT_ENABLE)
-#define DPC_VBUS_PM_LOG_ACTIVE   (DPC_DIAGNOSTICS_ENABLE || DPC_DIAG_VBUS_PM_ENABLE)
-
 /*
  * Desktop PD Power Converter board net aliases.
  *
