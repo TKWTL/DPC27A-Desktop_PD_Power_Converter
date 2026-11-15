@@ -21,6 +21,7 @@
 #include "time_api.h"
 #include "debug.h"
 #include "Services/fan_control.h"
+#include "app_tasks.h"
 #include "core/ui.h"
 #include "display/dispDriver.h"
 
@@ -34,6 +35,8 @@
 static ui_item_t s_soft_reset_item;
 static ui_item_t s_isp_reboot_item;
 static ui_item_t s_fan_delay_item;
+static ui_item_t s_temp_source_item[2];
+static uint8_t s_temp_source_state[2];
 static uint8_t   s_fan_delay_state;   /* 0 = 40/37 C, 1 = +10 C (50/47 C) */
 
 /* ------------------------------------------------------------------ */
@@ -50,14 +53,26 @@ static void fan_delay_clicked(ui_t *ui)
     FAN_Control_SetTemperatureDelay((s_fan_delay_state != 0u) ? 10u : 0u);
 }
 
+static void temperature_sources_clicked(ui_t *ui)
+{
+    (void)ui;
+    APP_SetTemperatureSources((s_temp_source_state[0] ? APP_TEMP_SOURCE_1 : 0u) |
+                              (s_temp_source_state[1] ? APP_TEMP_SOURCE_2 : 0u));
+}
+
 void Add_Service_Items(ui_page_t *parent_page)
 {
     static ui_data_t fan_delay_data;
     static ui_element_t fan_delay_element;
+    static ui_data_t temp_data[2];
+    static ui_element_t temp_element[2];
+    static const char *const temp_names[2] = { " Use Temp#1", " Use Temp#2" };
+    uint8_t n;
+    uint8_t sources = APP_GetTemperatureSources();
 
     /* Switch item: K2 toggles it in place and the value column shows a
      * checkbox, exactly like "Background"/"Screen Flip" on the display page.
-     * Registered first so it sits directly above the reset entries. */
+     * Registered first, followed by the two independent sensor switches. */
     s_fan_delay_state = (FAN_Control_GetTemperatureDelay() != 0u) ? 1u : 0u;
     fan_delay_data.name = "Fan +10C";
     fan_delay_data.ptr = &s_fan_delay_state;
@@ -74,6 +89,20 @@ void Add_Service_Items(ui_page_t *parent_page)
 
     AddItem(" Fan +10'C", UI_ITEM_DATA, 0, &s_fan_delay_item,
             parent_page, 0, 0);
+    for(n = 0u; n < 2u; ++n)
+    {
+        s_temp_source_state[n] = (uint8_t)((sources & (1u << n)) != 0u);
+        temp_data[n].name = temp_names[n];
+        temp_data[n].ptr = &s_temp_source_state[n];
+        temp_data[n].function = temperature_sources_clicked;
+        temp_data[n].functionType = UI_DATA_FUNCTION_STEP_EXECUTE;
+        temp_data[n].dataType = UI_DATA_SWITCH;
+        temp_data[n].actionType = UI_DATA_ACTION_RW;
+        temp_element[n].data = &temp_data[n];
+        Create_element(&s_temp_source_item[n], &temp_element[n]);
+        AddItem(temp_names[n], UI_ITEM_DATA, 0, &s_temp_source_item[n],
+                parent_page, 0, 0);
+    }
     AddItem(" Reset Now", UI_ITEM_WORD, 0, &s_soft_reset_item,
             parent_page, 0, SoftReset_Action);
     AddItem(" Reboot to ISP", UI_ITEM_WORD, 0, &s_isp_reboot_item,

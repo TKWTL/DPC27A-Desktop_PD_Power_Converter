@@ -18,7 +18,8 @@
 static ui_page_t s_main_page;
 static ui_page_t s_statistics_page;
 static ui_page_t s_settings_icons_page;
-static ui_page_t s_settings_page;
+static ui_page_t s_display_page;
+static ui_page_t s_system_page;
 
 static ui_item_t s_dashboard_item;
 static ui_item_t s_statistics_item;
@@ -27,8 +28,10 @@ enum { STAT_PDO, STAT_REQ, STAT_CUR, STAT_VBUS, STAT_GX, STAT_NTC, STAT_COUNT };
 static ui_item_t s_stats_items[STAT_COUNT];
 static ui_item_t s_settings_item;
 static ui_item_t s_settings_icons_back_item;
-static ui_item_t s_settings_detail_item;
-static ui_item_t s_settings_back_item;
+static ui_item_t s_display_item;
+static ui_item_t s_display_back_item;
+static ui_item_t s_system_item;
+static ui_item_t s_system_back_item;
 static ui_item_t s_about_item;
 static ui_item_t s_burnin_item;
 static ui_item_t s_dino_item;
@@ -44,21 +47,18 @@ static uint8_t s_statistics_valid;
 void Statistics_Poll(void)
 {
     uint32_t now = TIME_Millis();
-    int32_t milli_c;
-    int16_t ntc_x10 = 0;
+    int16_t temp_x10 = 0;
     uint8_t ready;
-    const GX21M15_Handle *gx = APP_GetGX21M15();
 
     if(s_statistics_valid && (uint32_t)(now - s_statistics_poll_ms) < 200u)
         return;
 
     s_statistics_valid = 1u;
     s_statistics_poll_ms = now;
-    milli_c = GX21M15_ReadTemperatureMilliC(gx);
-    s_stats_has[STAT_GX] = GX21M15_IsOnline(gx);
-    s_stats_value[STAT_GX] = (int)((milli_c >= 0 ? milli_c + 50 : milli_c - 50) / 100);
-    s_stats_has[STAT_NTC] = SW3538_ReadNTCTemperatureX10(APP_GetSW3538(), &ntc_x10);
-    s_stats_value[STAT_NTC] = ntc_x10;
+    s_stats_has[STAT_GX] = APP_ReadTemperatureX10(APP_TEMP_SOURCE_1, &temp_x10);
+    s_stats_value[STAT_GX] = temp_x10;
+    s_stats_has[STAT_NTC] = APP_ReadTemperatureX10(APP_TEMP_SOURCE_2, &temp_x10);
+    s_stats_value[STAT_NTC] = temp_x10;
     s_stats_has[STAT_VBUS] = 1u;
     s_stats_value[STAT_VBUS] = (int)(VBUS_Sense_ReadMillivolts() / 10u);
 
@@ -83,7 +83,7 @@ void Statistics_Poll(void)
 static void statistics_add_rows(void)
 {
     static const char *const names[STAT_COUNT] = {
-        " PDO (DC)", " Req (V)", " Cur (A)", " VBUS (V)", " GX21M15 (C)", " SW3538 (C)"
+        " PDO (DC)", " Req (V)", " Cur (A)", " VBUS (V)", " Temp#1 (C)", " Temp#2 (C)"
     };
     uint8_t n;
     for(n = 0u; n < STAT_COUNT; ++n)
@@ -133,22 +133,29 @@ void Create_MenuTree(ui_t *ui)
     AddItem("-Dashboard", UI_ITEM_WORD, img_dashboard,
             &s_dashboard_item, &s_main_page, 0, Dashboard_Page);
 
-    /* Settings icon submenu: Return/Home, TypeA+C, TypeC1, TypeC2, Settings.
-     * Both Settings tiers share one constant img_configuration bitmap. */
+    /* Settings icons: Home, Display, TypeA+C, TypeC1, TypeC2, System. */
     AddItem("-Settings", UI_ITEM_PARENTS, img_configuration,
             &s_settings_item, &s_main_page, &s_settings_icons_page, 0);
         AddPage("[Settings]", &s_settings_icons_page, UI_PAGE_ICON, &s_main_page);
         AddItem("[Menu]", UI_ITEM_RETURN, img_home,
                 &s_settings_icons_back_item, &s_settings_icons_page, &s_main_page, 0);
-        Add_Port_Items(&s_settings_icons_page);
-        AddItem("-Settings", UI_ITEM_PARENTS, img_configuration,
-                &s_settings_detail_item, &s_settings_icons_page, &s_settings_page, 0);
-            AddPage("[Settings]", &s_settings_page, UI_PAGE_TEXT, &s_settings_icons_page);
+        AddItem("-Display", UI_ITEM_PARENTS, img_burn_in,
+                &s_display_item, &s_settings_icons_page, &s_display_page, 0);
+            AddPage("[Display]", &s_display_page, UI_PAGE_TEXT, &s_settings_icons_page);
             AddItem("[Return]", UI_ITEM_RETURN, 0,
-                    &s_settings_back_item, &s_settings_page, &s_settings_icons_page, 0);
-            PM_UI_AddSleepSettingsItems(&s_settings_page);
-            Add_Disp_Items(&s_settings_page);
-            Add_Service_Items(&s_settings_page);
+                    &s_display_back_item, &s_display_page, &s_settings_icons_page, 0);
+            PM_UI_AddSleepSettingsItems(&s_display_page);
+            PM_UI_AddPowerSleepBlockItem(&s_display_page);
+            Add_Disp_Items(&s_display_page);
+            AddItem("-Burn-in Test", UI_ITEM_WORD, 0,
+                    &s_burnin_item, &s_display_page, 0, Burnin_Page);
+        Add_Port_Items(&s_settings_icons_page);
+        AddItem("-System", UI_ITEM_PARENTS, img_configuration,
+                &s_system_item, &s_settings_icons_page, &s_system_page, 0);
+            AddPage("[System]", &s_system_page, UI_PAGE_TEXT, &s_settings_icons_page);
+            AddItem("[Return]", UI_ITEM_RETURN, 0,
+                    &s_system_back_item, &s_system_page, &s_settings_icons_page, 0);
+            Add_Service_Items(&s_system_page);
 
     /* Root Statistics follows Settings; PD, VBUS and temperatures are read-only rows. */
     AddItem("-Statistics", UI_ITEM_PARENTS, img_statistics,
@@ -157,9 +164,6 @@ void Create_MenuTree(ui_t *ui)
         AddItem("[Menu]", UI_ITEM_RETURN, 0, &s_statistics_back_item,
                 &s_statistics_page, &s_main_page, 0);
         statistics_add_rows();
-
-    AddItem("-Burn-in Test", UI_ITEM_WORD, img_burn_in,
-            &s_burnin_item, &s_main_page, 0, Burnin_Page);
 
     AddItem("-Dino Game", UI_ITEM_WORD, img_dino,
             &s_dino_item, &s_main_page, 0, Game_DinoSaur);

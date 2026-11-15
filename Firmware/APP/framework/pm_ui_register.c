@@ -32,6 +32,8 @@ static ui_item_t s_opt_item[PM_UI_OPTION_COUNT];
 static ui_data_t s_opt_data[PM_UI_OPTION_COUNT];
 static ui_element_t s_opt_elem[PM_UI_OPTION_COUNT];
 static uint8_t s_opt_state[PM_UI_OPTION_COUNT];
+static ui_item_t s_power_block_item;
+static uint8_t s_power_block_state;
 
 static void pm_ui_option_clicked(ui_t *ui)
 {
@@ -86,4 +88,28 @@ void PM_UI_AddSleepSettingsItems(ui_page_t *settings_page)
         AddItem(s_opt_names[i], UI_ITEM_DATA, 0, &s_opt_item[i],
                 &s_sleep_page, 0, 0);
     }
+}
+
+/* Independent switch, not part of the timeout radio group. */
+static void pm_ui_power_block_clicked(ui_t *ui)
+{
+    (void)ui;
+    pm_api_set_output_sleep_block_enabled(s_power_block_state);
+}
+
+void PM_UI_AddPowerSleepBlockItem(ui_page_t *parent_page)
+{
+    static ui_data_t data;
+    static ui_element_t element;
+
+    s_power_block_state = pm_api_get_output_sleep_block_enabled();
+    data.name = " Keep On >5W";
+    data.ptr = &s_power_block_state;
+    data.function = pm_ui_power_block_clicked;
+    data.functionType = UI_DATA_FUNCTION_STEP_EXECUTE;
+    data.dataType = UI_DATA_SWITCH;
+    data.actionType = UI_DATA_ACTION_RW;
+    element.data = &data;
+    Create_element(&s_power_block_item, &element);
+    AddItem(data.name, UI_ITEM_DATA, 0, &s_power_block_item, parent_page, 0, 0);
 }

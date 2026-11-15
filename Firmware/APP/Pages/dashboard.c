@@ -251,26 +251,7 @@ static void dash_fill_sw3526(dash_column_t *col, SW3526_Handle *handle, const ch
     }
 }
 
-/* Board temperature from the 500 ms GX21M15U device mirror (BSP/GX21M15,
- * polled by thread_gx21m15 in APP/app_tasks.c).  The UI never touches I2C: it
- * only reads the cached milli-Celsius value and rounds it to 0.1 C.  Returning
- * 0 lets the caller fall back to the "--.-C" placeholder, exactly like an
- * offline chip column renders "---". */
-static uint8_t dash_read_temperature(int16_t *tenths_c)
-{
-    GX21M15_Handle *handle = APP_GetGX21M15();
-    int32_t milli_c;
-
-    if((tenths_c == 0) || !GX21M15_IsOnline(handle))
-        return 0u;
-
-    milli_c = GX21M15_ReadTemperatureMilliC(handle);
-    *tenths_c = (int16_t)((milli_c >= 0) ? ((milli_c + 50) / 100)
-                                         : ((milli_c - 50) / 100));
-    return 1u;
-}
-
-static const char *dash_pd_state_text(void)
+/* Shared cached control temperature; no I2C or float in the UI. */static const char *dash_pd_state_text(void)
 {
     /* Input undervoltage overrides every other state (budget forced to 0 W). */
     if(VBUS_Sense_ReadMillivolts() < PWR_LIMIT_UVP_MV)
@@ -313,7 +294,7 @@ static void dash_fmt_row1_head(char *head, size_t size)
     uint32_t limit_w;
     int16_t tenths_c;
 
-    if(dash_read_temperature(&tenths_c))
+    if(APP_ReadControlTemperatureX10(&tenths_c))
     {
         const char *sign = "";
 

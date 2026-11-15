@@ -13,7 +13,7 @@
 | `indev/` | 输入适配(按键事件 → UI 事件) |
 | `widget/` | 文本与数值/参数控件 |
 | `fonts/` | 唯一字库 `font_menu_main_h12w6` |
-| `images/` | 仪表盘、Statistics、设置、端口、烧屏、游戏等 30×30 XBM 图标（Statistics 来自 IH01A；两级设置共用一张图片） |
+| `images/` | 仪表盘、Statistics、设置、端口、烧屏、游戏等 30×30 XBM 图标（Statistics 来自 IH01A；Settings/System 共用配置图标，Display 复用烧屏图标） |
 | `ui_conf.h` | 分辨率、默认旋转 `U8G2_R1`、字体与布局常量 |
 
 > 产品页面函数不放在本目录,而是放在 `APP/Pages/`(例如 `dashboard.c/.h`)。
@@ -36,7 +36,7 @@
 
 - `Pages/dashboard.c/.h`:`Dashboard_Page()`(开机仪表盘);
 
-- 第 1 行:温度(GX21M15U,显示为 `25.3C` 一位小数,传感器离线时 `--.-C`)、
+- 第 1 行:温度(已使能且有效的 Temp#1/Temp#2 融合,显示为 `25.3C` 一位小数,传感器离线时 `--.-C`)、
   输入电压(`20V`,整数伏)、总功率限制(`270Wmax`;数字 3 位右对齐固定 `W` 位置,
   UVP 0 W、PD 合同 95%、DC 用
   DOWN 以 10 W 步进调节、60 W 后回绕 270 W)、PD 输入状态(`UVP`/`EPR`/`SPR`/
@@ -53,15 +53,14 @@
 - 吞掉导航键(DC 状态下 DOWN 调节总功率限制),按 K2(ENTER) 返回图标菜单。
 - 入页时 `Disp_SetMaxClipWindow()` 恢复全屏剪裁窗口(菜单页会留下标题/数据区剪裁)。
 
-> 温度由 `dash_read_temperature()` 取自 `APP_GetGX21M15()` 的 500 ms 镜像
-> (`GX21M15_IsOnline()` + `GX21M15_ReadTemperatureMilliC()`,四舍五入到 0.1 °C),
+> 温度由 `APP_ReadControlTemperatureX10()` 取自已启用且有效的两路镜像，四舍五入到 0.1 °C，
 > UI 不直接访问 I2C。
 
 ## 服务项与设置项
 
 菜单树(`ui_conf.c`)直接挂载,没有 "Tools" 二级菜单:
 
-- 主菜单 `-Burn-in Test`(`Pages/service_pages.c` 的 `Burnin_Page()`):
+- Display 子页 `-Burn-in Test`(`Pages/service_pages.c` 的 `Burnin_Page()`):
   先显示说明(约 3 s,任意键跳过),随后整屏涂白用于烧屏观察,任意键返回菜单;
 - 主菜单 `-Dino Game`(`Pages/game_dinosaur.c`,由 NUEDC_2025B Firmware_0 移植):
   小恐龙跑酷——K1(DOWN) 跳/失败后重开、K2(ENTER) 退出且**保留本次进度**
@@ -132,3 +131,10 @@ Dashboard 页内 K1 被忽略,按 K2(短按)返回图标菜单,长按同样返�
 
 - `UI_DATA_SWITCH` 的空心外框及选中填充整体以 `UI_DATA_X1 - UI_FONT_HIGHT` 为左边界，与 INT/FIXED 右栏共用右缘。128 px、12 px 字高时 x=106（原 x=86，右移20 px），外框 12×12，填充内缩2 px；不改变纵坐标、裁剪、开关行为或滚动条。
 - 未来中文化不改变 Dashboard 自绘页与图标菜单共用 `Dashboard_DrawStatusLine()` 的任何文本、数字格式、ASCII 字体和坐标；仅 `-Dashboard` 菜单入口可以翻译。具体边界见 [APP/I18N.md](../I18N.md)。
+
+### 2026-11-15：Display/System 与温度融合（最新菜单定义）
+
+- 根图标页：Dashboard / Settings / Statistics / Dino Game / About。Settings 图标页：[Menu] / Display / TypeA+C / TypeC1 / TypeC2 / System。Display 复用 img_burn_in，System 保留 img_configuration，两者均进入 TEXT 页。
+- Display：[Return] / -Sleep Options / Keep On >5W（默认开）/ Contrast / Background / Screen Flip / -Burn-in Test。烧屏功能从根菜单移入；退出回 Display。
+- System：[Return] / Fan +10'C / Use Temp#1 / Use Temp#2 / Reset Now / Reboot to ISP。两路温度参与开关默认开、独立、RAM-only；Fan +10'C 原功能及默认值不变。
+- Statistics 温度两行改为 Temp#1 (C)、Temp#2 (C)，仍分别显示真实有效镜像（即使未选为控制源），失效显示 --。Dashboard 与风扇共用 APP_ReadControlTemperatureX10：两个有效且启用则取平均，一路可用则取该路，无可用则主界面 --.-C，风扇下一轮 500 ms 控制全速（UVP 优先停转）。不再保留启动/缺失宽限；采样周期及 NTC 换算不变。Dashboard 保持 ASCII，i18n 仅更新规划表。

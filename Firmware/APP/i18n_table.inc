@@ -15,7 +15,6 @@
     { "[Return]", "[返回]" },
     { "-Statistics", "-统计" },
     { "[Statistics]", "[统计]" },
-    { "-Burn-in Test", "-老化测试" },
     { "-Dino Game", "-恐龙游戏" },
     { "-About", "-关于" },
 
@@ -38,7 +37,11 @@
     { " AFC", " AFC" },
     { " TFCP", " TFCP" },
 
-/* Settings / sleep / display */
+/* Settings / sleep / display / system */
+    { "-Display", "-显示" },
+    { "[Display]", "[显示]" },
+    { "-System", "-系统" },
+    { "[System]", "[系统]" },
     { "-Sleep Options", "-休眠选项" },
     { "[Sleep]", "[休眠]" },
     { "[Home]", "[返回]" },
@@ -51,14 +54,18 @@
     { " 10min", " 10分钟" },
     { " 15min", " 15分钟" },
     { " 30min", " 30分钟" },
+    { " Keep On >5W", " >5W不休眠" },
     { " Contrast", " 对比度" },
     { "Contrast", "对比度" },
     { " Background", " 反色显示" },
     { "Background", "反色显示" },
     { " Screen Flip", " 屏幕翻转" },
     { "Screen Flip", "屏幕翻转" },
+    { "-Burn-in Test", "-老化测试" },
     { " Fan +10'C", " 风扇 +10'C" },
     { "Fan +10C", "风扇 +10C" },
+    { " Use Temp#1", " 使用温度#1" },
+    { " Use Temp#2", " 使用温度#2" },
     { " Reset Now", " 系统重启" },
     { " Reboot to ISP", " 重启至ISP" },
 
@@ -85,8 +92,8 @@
     { " Req (V)", " 请求 (V)" },
     { " Cur (A)", " 电流 (A)" },
     { " VBUS (V)", " 母线 (V)" },
-    { " GX21M15 (C)", " GX21M15 (C)" },
-    { " SW3538 (C)", " SW3538 (C)" },
+    { " Temp#1 (C)", " 温度#1 (C)" },
+    { " Temp#2 (C)", " 温度#2 (C)" },
 
 /* Remaining dynamic templates */
     { "HI %05d %05d", "最高 %05d %05d" },

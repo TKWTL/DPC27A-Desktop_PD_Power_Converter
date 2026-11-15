@@ -4,7 +4,8 @@
 #include <stdint.h>
 
 /* Automatic fan curve.  Pure policy (no hardware access): thread_fan in
- * APP/app_tasks.c reads the GX21M15 mirror, calls FAN_Control_NextPwm() and
+ * APP/app_tasks.c reads the shared enabled/valid temperature fusion, calls
+ * FAN_Control_NextPwm() and
  * applies the result through FAN_PWM_SetDuty8().
  *
  * Priority, first match wins:

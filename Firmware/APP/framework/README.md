@@ -61,3 +61,7 @@
 - 屏幕只是 UI_OFF，PD 任务、SW3538/SW3526 轮询、风扇和 I²C 故障恢复不停止；未启用深度睡眠。
 - **后续中文化参照 IH01A：** `Firmware/APP/MiaoUI/fonts/font_fusion_pixel_12_zh.c`（Fusion Pixel 12px，OFL）、`fonts/LICENSE-OFL`、UTF-8 文字宽度测量及菜单高亮布局；但 DPC27A 是 128×80 屏且 Flash 紧张，本次不导入字库或翻译。
 - 本提交暂未用 MounRiver Studio II 编译、烧录或实测。
+
+### 2026-11-15：Display 的功率阻止休眠开关
+
+`-Settings → -Display → Keep On >5W` (UI_DATA_SWITCH，RAM-only，默认开启) 控制 `PM_BLOCK_OUTPUT_POWER`。开启沿用实测输出 >5 W 冻结自动倒计时；关闭立即清除该 block 位，下一次 50 ms PM poll 恢复倒计时。其它 block 位不受影响。按键/插拔/功率跨越 5 W 或相对基准累计变化 ≥2 W 唤醒仍保留；手动关屏不受阻止休眠开关影响。

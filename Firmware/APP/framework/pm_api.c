@@ -32,6 +32,7 @@ static pm_controller_t s_pm_ctrl;
 static uint8_t s_pm_ready;
 static volatile uint8_t s_pm_refresh_req;
 static uint8_t s_pm_block_mask;
+static uint8_t s_pm_output_block_enabled = 1u;
 static uint8_t s_pm_sleep_blocked;
 static uint8_t s_wk_silence;
 static uint8_t s_unstable_wake;
@@ -89,8 +90,25 @@ void pm_api_set_sleep_timeout(int timeout_sec)
     }
 }
 
+void pm_api_set_output_sleep_block_enabled(uint8_t enable)
+{
+    s_pm_output_block_enabled = (enable != 0u) ? 1u : 0u;
+    if(!s_pm_output_block_enabled)
+        s_pm_block_mask &= (uint8_t)~PM_BLOCK_OUTPUT_POWER;
+}
+
+uint8_t pm_api_get_output_sleep_block_enabled(void)
+{
+    return s_pm_output_block_enabled;
+}
+
 void pm_api_set_sleep_block(uint8_t mask, uint8_t enable)
 {
+    if(!s_pm_output_block_enabled)
+    {
+        s_pm_block_mask &= (uint8_t)~PM_BLOCK_OUTPUT_POWER;
+        mask &= (uint8_t)~PM_BLOCK_OUTPUT_POWER;
+    }
     if (enable != 0u) {
         s_pm_block_mask |= mask;
     } else {

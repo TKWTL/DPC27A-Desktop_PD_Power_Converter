@@ -14,5 +14,6 @@
  * The main-page "-Sleep" icon is gone: the root menu answers BACK (long press
  * of ENTER) with pm_api_force_sleep(), see core/ui.c Process_UI_Run(). */
 void PM_UI_AddSleepSettingsItems(ui_page_t *settings_page);
+void PM_UI_AddPowerSleepBlockItem(ui_page_t *parent_page);
 
 #endif /* PM_UI_REGISTER_H */

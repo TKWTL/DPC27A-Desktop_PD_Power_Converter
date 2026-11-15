@@ -10,15 +10,14 @@
 extern "C" {
 #endif
 
-/* Settings-page entries, added directly (no "Tools" submenu): the fan trigger
- * delay switch first, then the two reset actions. */
+/* System-page entries: fan offset, two temperature-source switches, resets. */
 void Add_Service_Items(ui_page_t *parent_page);
 
 /* Full-screen OLED burn-in test: short explanation, then a white screen; any
  * key during the white phase returns to the menu. */
 void Burnin_Page(ui_t *ui);
 
-/* Reset actions used as function items on the settings page.  Neither ever
+/* Reset actions used as function items on the System page.  Neither ever
  * returns: Reset Now restarts the application, Reboot to ISP hands over to
  * the CH32 factory bootloader on the next reset. */
 void SoftReset_Action(ui_t *ui);

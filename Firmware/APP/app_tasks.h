@@ -14,6 +14,16 @@ SW3526_Handle *APP_GetSW3526_1(void);
 SW3526_Handle *APP_GetSW3526_2(void);
 GX21M15_Handle *APP_GetGX21M15(void);
 
+/* Source selection affects control/display fusion, never sampling. */
+#define APP_TEMP_SOURCE_1  0x01u
+#define APP_TEMP_SOURCE_2  0x02u
+#define APP_TEMP_SOURCE_ALL (APP_TEMP_SOURCE_1 | APP_TEMP_SOURCE_2)
+void APP_SetTemperatureSources(uint8_t mask);
+uint8_t APP_GetTemperatureSources(void);
+/* false = unavailable; output is unchanged on failure */
+uint8_t APP_ReadTemperatureX10(uint8_t source, int16_t *value);
+uint8_t APP_ReadControlTemperatureX10(int16_t *value);
+
 /* Port fast-charge protocol mask requests (the three MiaoUI protocol pages). */
 #define APP_PORT_PROTO_SW3538    0u   /* SW3538: Type-A + Type-C pair */
 #define APP_PORT_PROTO_SW3526_1  1u   /* SW3526 #1: TypeC1 */

@@ -19,6 +19,9 @@ void pm_api_force_sleep(void);                   /* manual UI_OFF; ignores autom
 void pm_api_set_sleep_timeout(int timeout_sec);  /* 0 = No Auto Sleep, >0 = seconds */
 /* Output above 5 W freezes AUTO sleep; manual UI_OFF remains available. */
 #define PM_BLOCK_OUTPUT_POWER (1u<<0)
+/* RAM-only option, default enabled; affects auto sleep blocking only. */
+void pm_api_set_output_sleep_block_enabled(uint8_t enable);
+uint8_t pm_api_get_output_sleep_block_enabled(void);
 void pm_api_set_sleep_block(uint8_t mask, uint8_t enable);
 uint8_t pm_api_get_block_mask(void);
 uint8_t pm_api_ui_should_block(void);            /* 1 = thread_ui must stop drawing */

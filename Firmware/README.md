@@ -93,8 +93,8 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 
 - PB9 使用原生 TIM1_CH1 输出 187.5 kHz PWM。PSC=0、ARR=255 使 CCR1 与 8 位占空比
   一一对应(0..255 共 256 级);`FAN_PWM_SetDuty8()` 即该量程的唯一接口。
-- 转速由 `thread_fan` 按 `Services/fan_control.c` 的曲线自动控制:UVP 停转、GX21M15U
-  失效全速,平时 40 °C 启动 / 37 °C 停止,之后每升高 1 °C 占空比 +2(启动点 80,静音直跳)。
+- 转速由 `thread_fan` 按 `Services/fan_control.c` 的曲线自动控制:UVP 停转、两路启用且有效的温度融合、无可用源
+  全速,平时 40 °C 启动 / 37 °C 停止,之后每升高 1 °C 占空比 +2(启动点 80,静音直跳)。
 - SH1107 使用 SPI1 重映射 10:PA11 SCK、PA10 MOSI、PA12(硬件 NSS 片选)、PA9 D/C。
   SPI 时钟 12 MHz,SPI TX 使用 DMA1 CH3,整帧分页由 DMA 完成中断推进。
 - 0.78 英寸面板由 TK078F288 80×128 原生 u8g2 后端驱动。`U8G2_R1` 得到产品需要的
@@ -106,10 +106,8 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 - MiaoUI 保留剪裁窗口、圆角矩形/框、XBM 图片、圆/线图元和文本渲染;
   当前只链接 `font_menu_main_h12w6` 一个字体。
 - 首屏是 **Dashboard 仪表盘函数页**(见下)。主图标菜单顺序为
-  Dashboard / Settings / Statistics / Burn-in Test / Dino Game / About；
-  Settings 图标子菜单首项是 `img_home` 返回上级，后面依次为 TypeA+C、TypeC1、TypeC2
-  (`APP/Pages/port_pages.c`)与第二层 Settings（进入原文字设置页），两层 Settings 共用
-  `img_configuration`；Statistics 提供 PD 申请档位、请求电压/电流、VBUS 实测值，以及 GX21M15U 和 SW3538 NTC 温度。
+  Dashboard / Settings / Statistics / Dino Game / About；
+  Settings 图标子菜单依次为返回、Display、TypeA+C、TypeC1、TypeC2、System；Display 复用 `img_burn_in`，System 保留 `img_configuration`。Statistics 提供 PD 档位、电压/电流、VBUS 与 Temp#1/Temp#2 温度。
   仪表盘与其它全屏页一样都只是被菜单调用的绘制函数;仪表盘上导航键
   被忽略,按 K2(ENTER,松开触发)返回图标菜单,长按 K2=BACK 同样返回。
   K1=DOWN,K2=ENTER(长按=BACK:子页回上级、根菜单立即休眠),两路 GPIO 使用内部
@@ -121,7 +119,7 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 而是进入 128×80 全屏遥测页(`Dashboard_Page()`,位于 `APP/Pages/dashboard.c`):
 
 ```text
---.-C 20V 270Wmax DC         <- 温度(GX21M15U,离线占位;在线如 25.3C) / 输入电压(整数伏) / 总功率限制 / PD 状态(右对齐)
+--.-C 20V 270Wmax DC         <- 温度(所选有效温度融合,无可用时占位;如 25.3C) / 输入电压(整数伏) / 总功率限制 / PD 状态(右对齐)
       A+C       C1      C2 <- 第二行:各块端口名
    20.00V   20.00V   20.00V <- 第三行:输出电压(两位小数)
    1.250A   0.500A   0.000A <- 第四行:输出电流(三位小数)
@@ -211,7 +209,7 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 ### Flash 优化与中文化预备
 
 - PD 详细日志改为主诊断宏控制，默认保留简短事件，协议状态机及 PHY 不改。源码直接 printf 格式串（去重含 NUL，未计共享/合并）由 3235 B 降至 529 B（保守统计跨条件编译的分支，非实际链接结果）。最终以同配置 Clean Build 的 MAP 为准。
-- [APP/I18N.md](APP/I18N.md)：英文原文为键的翻译清单与字库估算，当前 73 项、94 个去重汉字，尚未接入运行时。
+- [APP/I18N.md](APP/I18N.md)：英文原文为键的翻译清单与字库估算，当前 80 项、97 个去重汉字，尚未接入运行时。
 
 ### 2026-11-15：遥测与 UI 刷新、双温度
 
@@ -233,7 +231,16 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 
 ### 2026-11-15：软件 I²C 与 UI 加速偶发离线
 
-用户报告 UI 加速后两路 SW3526 偶尔整列 `---`，发生早于按键时基调整。修正 SoftI2C 实际 SCL 释放后的拉伸计时、边沿时间戳、STOP/恢复检查，普通 UI 绘制避开在途软件 I²C 事务；不降低扫描速度，不改遥测周期、硬件 I²C、PD 或功率策略。增加每路 RAM 故障记录，无打印、无离线滤波。详见 [SoftI2C 修订笔记](Peripheral/SoftI2C/README.md)。本轮待目标构建、板端验证。
+用户报告 UI 加速后两路 SW3526 偶尔整列 `---`，发生早于按键时基调整。修正 SoftI2C 实际 SCL 释放后的拉伸计时、边沿时间戳、STOP/恢复检查，普通 UI 绘制避开在途软件 I²C 事务；不降低扫描速度，不改遥测周期、硬件 I²C、PD 或功率策略。历史诊断版本曾增加每路 RAM 故障记录（已退役），无打印、无离线滤波。详见 [SoftI2C 修订笔记](Peripheral/SoftI2C/README.md)。本轮待目标构建、板端验证。
+
+### 2026-11-15：软 I²C 实测反馈与菜单/温控调整
+
+用户确认 `9709592` 的 SW3526 偶发整列离线已消失。删除临时 RAM 故障锁存、调度间隔和恢复失败统计，并保留原 recovery_count；修订后的 SCL/STOP/恢复时序与 UI 事务间隙调度不变，不恢复诊断打印。
+
+- Settings 图标页插入 Display（回收烧屏图标），原文字 Settings 改为 System（原图标）。Display 负责 Sleep、Keep On >5W、Contrast、Background、Screen Flip、Burn-in Test；System 负责 Fan +10'C、Temp#1/2 开关、Reset/ISP。
+- Keep On >5W 默认开，关闭只取消负载阻止自动睡眠，事件唤醒和手动睡眠保持。所有新增开关 RAM-only。
+- Temp#1 为 GX21M15U，Temp#2 为 SW3538 NTC，UI 标签不暴露芯片型号。Dashboard 和风扇统一使用已启用且有效的温度平均（单路可用则直接使用该路，签名定点值 0.1°C）；Statistics 仍显示独立原始镜像。没有可用源时显示 --.-C、风扇下一次 500 ms 调节为 255；输入 UVP 仍最高优先强制 0。取消旧的3次/3s失效宽限，因此上电未有首个样本且输入正常时也可能全速，待验证 PD 启动与风扇冲击。采样周期、供电保护、风扇曲线不改。
+- 本次清理版和新菜单/融合尚未目标构建或实机验证，之前的修复已实测有效，不代表本轮通过。i18n 仅维护规划，80 项、97 个汉字。
 
 ## 模块文档
 

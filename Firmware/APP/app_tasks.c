@@ -34,8 +34,64 @@ static SW3526_Handle s_sw3526_1;
 static SW3526_Handle s_sw3526_2;
 static SW3538_Handle s_sw3538;
 static GX21M15_Handle s_gx21m15;
+static uint8_t s_temperature_sources = APP_TEMP_SOURCE_ALL;
 
 ui_t ui;
+
+void APP_SetTemperatureSources(uint8_t mask)
+{
+    s_temperature_sources = (uint8_t)(mask & APP_TEMP_SOURCE_ALL);
+}
+
+uint8_t APP_GetTemperatureSources(void)
+{
+    return s_temperature_sources;
+}
+
+/* Read original telemetry even if excluded from control; Statistics is a
+ * diagnostic view. All temperatures share signed tenths of a degree C. */
+uint8_t APP_ReadTemperatureX10(uint8_t source, int16_t *value)
+{
+    int32_t mc;
+    if(value == 0)
+        return 0u;
+    if(source == APP_TEMP_SOURCE_1)
+    {
+        if(!GX21M15_IsOnline(&s_gx21m15))
+            return 0u;
+        mc = GX21M15_ReadTemperatureMilliC(&s_gx21m15);
+        *value = (int16_t)((mc >= 0 ? mc + 50 : mc - 50) / 100);
+        return 1u;
+    }
+    if(source == APP_TEMP_SOURCE_2)
+        return SW3538_ReadNTCTemperatureX10(&s_sw3538, value);
+    return 0u;
+}
+
+uint8_t APP_ReadControlTemperatureX10(int16_t *value)
+{
+    int16_t t1 = 0, t2 = 0;
+    uint8_t v1, v2;
+    int32_t sum;
+    if(value == 0)
+        return 0u;
+    v1 = (s_temperature_sources & APP_TEMP_SOURCE_1) &&
+         APP_ReadTemperatureX10(APP_TEMP_SOURCE_1, &t1);
+    v2 = (s_temperature_sources & APP_TEMP_SOURCE_2) &&
+         APP_ReadTemperatureX10(APP_TEMP_SOURCE_2, &t2);
+    if(v1 && v2)
+    {
+        sum = (int32_t)t1 + t2;
+        *value = (int16_t)((sum + (sum >= 0 ? 1 : -1)) / 2);
+    }
+    else if(v1)
+        *value = t1;
+    else if(v2)
+        *value = t2;
+    else
+        return 0u;
+    return 1u;
+}
 
 static void APP_PrintResetCause(void)
 {
@@ -626,27 +682,13 @@ THRD_DECLARE(thread_gx21m15)
     THRD_END;
 }
 
-/* Automatic fan speed.  Pure RAM work (it only reads the 500 ms GX21M15
- * mirror), so unlike the device mirrors it also runs during the PD quiet
- * window - thermal protection must not wait for a PD contract.  Two guards
- * keep the fail-safe full-speed blast away from startup and bus glitches: a
- * missing sensor counts only after FAN_SENSOR_STRIKES consecutive failed
- * samples, and never during the first FAN_SENSOR_GRACE_MS (the first
- * temperature sample needs the 300 ms I2C phase plus up to the 1 s quiet
- * window, so every power-up would otherwise jump straight to 255). */
+/* Automatic fan speed: shared enabled/valid sensor fusion. No bus access.
+ * Missing feedback goes straight to the fail-safe on the next fan poll;
+ * existing input UVP remains the highest-priority override. */
 #define FAN_POLL_MS          500u
-#define FAN_SENSOR_STRIKES   3u
-#define FAN_SENSOR_GRACE_MS 3000u
 
 THRD_DECLARE(thread_fan)
 {
-    static int32_t temp_mc;
-    static int16_t temp_c;
-    static uint8_t online;
-    static uint8_t sensor_ok;
-    static uint8_t missing;
-    static uint8_t uvp;
-    static uint8_t pwm;
     static uint8_t applied;
     static uint8_t applied_valid;
 
@@ -654,29 +696,11 @@ THRD_DECLARE(thread_fan)
     THRD_DELAY(POLL_PHASE_FAN_MS);
     while(1)
     {
-        uvp = (uint8_t)((VBUS_Sense_ReadMillivolts() < PWR_LIMIT_UVP_MV) ? 1u : 0u);
-        online = GX21M15_IsOnline(&s_gx21m15);
-        temp_mc = GX21M15_ReadTemperatureMilliC(&s_gx21m15);
-        temp_c = (int16_t)((temp_mc >= 0) ? ((temp_mc + 500) / 1000)
-                                          : ((temp_mc - 500) / 1000));
-
-        if(online != 0u)
-        {
-            missing = 0u;
-        }
-        else if(missing < 255u)
-        {
-            missing++;
-        }
-
-        sensor_ok = 1u;
-        if((missing >= (uint8_t)FAN_SENSOR_STRIKES) &&
-           ((uint32_t)(TIME_Millis() - s_app_boot_ms) >= FAN_SENSOR_GRACE_MS))
-        {
-            sensor_ok = 0u;      /* truly missing -> the policy returns 255 */
-        }
-
-        pwm = FAN_Control_NextPwm(temp_c, sensor_ok, uvp);
+        int16_t temp_x10 = 0;
+        uint8_t online = APP_ReadControlTemperatureX10(&temp_x10);
+        int16_t temp_c = (int16_t)((temp_x10 >= 0 ? temp_x10 + 5 : temp_x10 - 5) / 10);
+        uint8_t uvp = (uint8_t)(VBUS_Sense_ReadMillivolts() < PWR_LIMIT_UVP_MV);
+        uint8_t pwm = FAN_Control_NextPwm(temp_c, online, uvp);
 
         if((applied_valid == 0u) || (pwm != applied))
         {
