@@ -2,12 +2,12 @@
  * (APP/Applications/game_dinosaur.c, original by TKWTL / hjl240) to this
  * project's MiaoUI:
  *
- *  - pass based: ui_loop() calls the page every ~8 ms and every pass renders
+ *  - pass based: ui_loop() calls the page every available UI frame (~6 ms target) and every pass renders
  *    one frame (no frame divider); the simulation runs on its own 16 ms tick
  *    (DINO_SIM_TICK_MS), decoupled from the drawing cost - the original
  *    blocked its task with osDelay(16) inside a while(1) loop;
  *  - no floats: the original float score/height/speed became fixed point
- *    (score: 8 units per pixel, height/speed: 2 units per pixel);
+ *    (score/world: 8 units per pixel, height: 4 units per pixel);
  *  - random: this project's own rand()/srand() (Project/Debug/debug.c,
  *    xorshift32) instead of the RTC-seeded libc pair - it is seeded from
  *    TIME_Millis() on every game start, because the board has no RTC;
@@ -21,17 +21,12 @@
  *  - edge: cacti and clouds are blitted at their (possibly negative) x, just
  *    like in the original - u8g2's XBMP path clips the off-screen part, so
  *    they scroll out gradually instead of vanishing at the left edge;
- *  - speed: one simulation tick every 16 ms applies one original 16 ms step
- *    (world, jump, spawns, collision) and half a score step, so world/jump
- *    run at the original pace (1:1) and the score at half of it - the screen
- *    still redraws on every pass, so the motion stays smoother than the
- *    original osDelay(16) loop.
+ *  - speed: world (ground, clouds and cacti) at 3/4 of the former rate,
+ *    jump arc sampled twice as finely over twice the time, leg animation
+ *    frame duration doubled. Score rate and spawn countdowns unchanged.
  *
- * Fixed point: score_px = s_score_x8 >> 3 (score) and dist_px = s_dist_x8 >> 3
- * (world) both use 8 units per pixel, which keeps the original speed tiers
- * (2 / 1.75 / 2.875 px per frame) exact.  Height: s_height2 = pixels * 2; the
- * jump applies the original constants (-12, +1 per original frame) once per
- * 16 ms tick, so the arc is the original one, step for step. */
+ * Fixed point: score/world use 8 units per pixel, carrying the quarter-unit
+ * world speed remainder; jump height uses 4 units per pixel. */
 #include "game_dinosaur.h"
 
 #include "time_api.h"
@@ -57,13 +52,13 @@
 #define DINO_DEFAULT_HEIGHT (DINO_GROUND_LINE_Y - (DINO_H - 1u))       /* 59 */
 
 #define DINO_SCORE_SHIFT    3u
-/* Simulation clock: one original 16 ms step per 16 ms tick - the original
- * pace (75% of the former aggressive 12 ms tick). */
+/* Keep simulation, spawns and score on the original independent clock. */
 #define DINO_SIM_TICK_MS    16u
 #define DINO_SIM_MAX_TICKS  3u      /* catch-up cap per call (48 ms) */
-#define DINO_GROUND_Y2      ((int16_t)(DINO_DEFAULT_HEIGHT * 2))
-#define DINO_JUMP_SPEED2    (-12)   /* takeoff: -6 px per sub-step (original value) */
-#define DINO_JUMP_GRAVITY2  1       /* fall: +0.5 px per sub-step (original value) */
+#define DINO_GROUND_Y4      ((int16_t)(DINO_DEFAULT_HEIGHT * 4))
+#define DINO_JUMP_SPEED2    (-12)   /* original takeoff speed, px * 2 */
+#define DINO_JUMP_GRAVITY2  1       /* add once per 32 ms jump step */
+#define DINO_RUN_FRAME_PX   9u      /* 6 * 2 * 3/4: twice previous frame time */
 
 #define CACTUS_RESPAWN_MAX  256u
 #define CACTUS_RESPAWN_MIN  64u
@@ -199,10 +194,12 @@ static dino_cactus_t s_cactus[CACTUS_POOL_DEPTH];
 static dino_cloud_t s_cloud[CLOUD_POOL_DEPTH];
 
 static uint32_t s_score_x8;      /* score pixels * 8 (original score rate) */
-static uint32_t s_dist_x8;       /* world pixels * 8 (advanced once per sub-step) */
+static uint32_t s_dist_x8;       /* world pixels * 8 */
+static uint8_t s_world_rem;      /* quarter of a world fixed-point unit */
 static uint8_t s_life;
 static dino_state_t s_state;
-static int16_t s_height2;        /* dino top, pixels * 2 */
+static int16_t s_height4;        /* dino top, pixels * 4 */
+static uint8_t s_jump_half;      /* 0/1: two interpolated ticks per old step */
 static int16_t s_speed2;         /* vertical speed, pixels * 2 per frame */
 static uint8_t s_last_coll;
 static uint16_t s_high_score;    /* displayed units (score_px / 2) */
@@ -234,9 +231,11 @@ static void dino_start_game(void)
 
     s_score_x8 = 0u;
     s_dist_x8 = 0u;
+    s_world_rem = 0u;
     s_life = 3u;
     s_state = DINO_PLAYING;
-    s_height2 = DINO_GROUND_Y2;
+    s_height4 = DINO_GROUND_Y4;
+    s_jump_half = 0u;
     s_speed2 = 0;
     s_last_coll = 0u;
     s_score_rem = 0u;
@@ -488,10 +487,12 @@ void Game_DinoSaur(ui_t *ui)
         {
             if(s_state == DINO_FAILED)
                 dino_start_game();
-            else if(s_height2 >= DINO_GROUND_Y2)
+            else if(s_height4 >= DINO_GROUND_Y4)
             {
                 s_speed2 = DINO_JUMP_SPEED2;
-                s_height2 = (int16_t)(s_height2 + DINO_JUMP_SPEED2);
+                s_jump_half = 0u;
+                /* Preserve the old immediate takeoff displacement (-6 px). */
+                s_height4 = (int16_t)(s_height4 + 2 * DINO_JUMP_SPEED2);
             }
         }
     }
@@ -502,9 +503,8 @@ void Game_DinoSaur(ui_t *ui)
         s_inited = 1u;
     }
 
-    /* Simulation clock: one original 16 ms step every DINO_SIM_TICK_MS - the
-     * original pace; the screen still redraws on every pass (~8 ms), which
-     * makes the motion much smoother than the original's blocked 16 ms loop. */
+    /* Independent 16 ms simulation clock. Rendering may be deferred by
+     * soft-I2C activity; the bounded catch-up policy remains unchanged. */
     now_ms = TIME_Millis();
     if(s_sim_last == 0u)
     {
@@ -550,24 +550,32 @@ void Game_DinoSaur(ui_t *ui)
         s_score_rem &= 1u;
         score_px = dino_score_px();
 
-        /* One original 16 ms step per tick: world, spawn countdowns, jump and
-         * collision test all run at the original pace. */
-        s_dist_x8 += step_x8;
+        /* World speed = 75%, including ground, clouds and cacti. Carry
+         * quarters rather than truncating each scaled step. */
+        s_world_rem = (uint8_t)(s_world_rem + 3u * step_x8);
+        s_dist_x8 += s_world_rem >> 2;
+        s_world_rem &= 3u;
         dist_px = dino_dist_px();
 
         dino_cloud_process(dist_px);
         dino_cactus_process(dist_px, score_px);
 
-        /* quadratic jump curve, height independent of the key hold time */
-        if(s_height2 < DINO_GROUND_Y2)
+        /* One original jump step spans two ticks. Quarter-pixel height
+         * interpolates its midpoint without float, keeping the peak height. */
+        if(s_height4 < DINO_GROUND_Y4)
         {
-            s_speed2 = (int16_t)(s_speed2 + DINO_JUMP_GRAVITY2);
-            s_height2 = (int16_t)(s_height2 + s_speed2);
-            if(s_height2 > DINO_GROUND_Y2)
-                s_height2 = DINO_GROUND_Y2;
+            if(s_jump_half == 0u)
+                s_speed2 = (int16_t)(s_speed2 + DINO_JUMP_GRAVITY2);
+            s_height4 = (int16_t)(s_height4 + s_speed2);
+            s_jump_half ^= 1u;
+            if(s_height4 >= DINO_GROUND_Y4)
+            {
+                s_height4 = DINO_GROUND_Y4;
+                s_jump_half = 0u;
+            }
         }
 
-        coll = dino_cactus_collision((int16_t)(s_height2 >> 1), dist_px);
+        coll = dino_cactus_collision((int16_t)(s_height4 >> 2), dist_px);
         if((coll != 0u) && (s_last_coll == 0u))   /* edge triggered, as the original */
         {
             s_life--;
@@ -580,7 +588,7 @@ void Game_DinoSaur(ui_t *ui)
         s_last_coll = coll;
     }
 
-    dino_top = (int16_t)(s_height2 >> 1);
+    dino_top = (int16_t)(s_height4 >> 2);
 
     /* ---- rendering (later draws cover earlier ones) ---- */
     bg = ui->bgColor;
@@ -608,7 +616,7 @@ void Game_DinoSaur(ui_t *ui)
     snprintf(buf, sizeof buf, "HI %05d %05d", (int)s_high_score, (int)(score_px >> 1));
     Disp_DrawStr(44u, 9u, buf);
 
-    dino_frame = (uint8_t)((dist_px / 6u) % 2u);   /* legs follow the run speed */
+    dino_frame = (uint8_t)((dist_px / DINO_RUN_FRAME_PX) % 2u);
     if(coll != 0u)
         Disp_DrawXBMP(DINO_DEFAULT_POS_X, (uint16_t)dino_top, DINO_W, DINO_H, s_dino_end);
     else if(dino_top != (int16_t)DINO_DEFAULT_HEIGHT)

@@ -138,3 +138,9 @@ Dashboard 页内 K1 被忽略,按 K2(短按)返回图标菜单,长按同样返�
 - Display：[Return] / -Sleep Options / Keep On >5W（默认开）/ Contrast / Background / Screen Flip / -Burn-in Test。烧屏功能从根菜单移入；退出回 Display。
 - System：[Return] / Fan +10'C / Use Temp#1 / Use Temp#2 / Reset Now / Reboot to ISP。两路温度参与开关默认开、独立、RAM-only；Fan +10'C 原功能及默认值不变。
 - Statistics 温度两行改为 Temp#1 (C)、Temp#2 (C)，仍分别显示真实有效镜像（即使未选为控制源），失效显示 --。Dashboard 与风扇共用 APP_ReadControlTemperatureX10：两个有效且启用则取平均，一路可用则取该路，无可用则主界面 --.-C，风扇下一轮 500 ms 控制全速（UVP 优先停转）。不再保留启动/缺失宽限；采样周期及 NTC 换算不变。Dashboard 保持 ASCII，i18n 仅更新规划表。
+
+### 2026-11-15：开关间隙、恐龙手感与 UTF-8 移植规划
+
+- 开关外框左边界改为 `UI_DATA_X1 - UI_FONT_HIGHT - 2u`，现在 x=104（原106），填充 x=106，宽度12/8px不变，右边界116与 scrollbar 左边界118间隔2px。INT/FIXED 数字仍右对齐至118。
+- Dino：16ms 模拟时基、分数速度与生成倒计时不变；地面、云和仙人掌共享世界位移的75%倍率，余数累加避免截断损耗。跳跃保留原39px最高点，旧24步/384ms扩展为48步/768ms（原即时起跳位移保持），4倍像素定点插入中点。腿动画原每6px切换，现每9px切换；结合75%世界速度，初始速度下48→96ms，每个速度档时间约为旧两倍。实际时长仍受协作式绘制/有限追帧影响。
+- IH01A UTF-8 和选框只做源代码对照及计划，未启用 Unicode/字体/翻译/语言开关。见 [I18N.md](../I18N.md)，尤其保留128×80、图标顶栏和定点数字右对齐。
