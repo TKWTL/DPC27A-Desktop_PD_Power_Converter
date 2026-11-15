@@ -73,18 +73,18 @@
     { "Jump to Restart", "跳跃重开" },
     { "Null!!", "空!!" },
 
-/* Dynamic format templates (lookup BEFORE snprintf; not rendered values) */
-    { " PDO: --", " 档位: --" },
-    { " Req: --", " 请求: --" },
-    { " Cur: --", " 电流: --" },
-    { " VBUS: --", " 母线: --" },
-    { " PDO: DC/--", " 档位: DC/--" },
-    { " PDO: NEG", " 档位: 协商" },
-    { " PDO#%u %s", " 档位#%u %s" },
-    { " Req %lu.%02luV", " 请求 %lu.%02luV" },
-    { " Cur %lu.%02luA", " 电流 %lu.%02luA" },
-    { " VBUS %lu.%02luV", " 母线 %lu.%02luV" },
-    { " GX21M15", " GX21M15" },
-    { " SW3538", " SW3538" },
+/* Statistics numeric item labels (not formatted values) */
+    { " PDO (DC)", " 档位 (DC)" },
+    { " PDO (NEG)", " 档位 (协商)" },
+    { " PDO (SPR)", " 档位 (SPR)" },
+    { " PDO (PPS)", " 档位 (PPS)" },
+    { " PDO (EPR)", " 档位 (EPR)" },
+    { " Req (V)", " 请求 (V)" },
+    { " Cur (A)", " 电流 (A)" },
+    { " VBUS (V)", " 母线 (V)" },
+    { " GX21M15 (C)", " GX21M15 (C)" },
+    { " SW3538 (C)", " SW3538 (C)" },
+
+/* Remaining dynamic templates */
     { "HI %05d %05d", "最高 %05d %05d" },
     { "%s OK!", "%s 完成!" },

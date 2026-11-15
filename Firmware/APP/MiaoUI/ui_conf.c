@@ -14,7 +14,6 @@
 #include "app_tasks.h"
 #include "vbus_sense.h"
 #include "time_api.h"
-#include <stdio.h>
 
 static ui_page_t s_main_page;
 static ui_page_t s_statistics_page;
@@ -24,8 +23,8 @@ static ui_page_t s_settings_page;
 static ui_item_t s_dashboard_item;
 static ui_item_t s_statistics_item;
 static ui_item_t s_statistics_back_item;
-static ui_item_t s_stats_pdo_item, s_stats_req_item, s_stats_current_item, s_stats_vbus_item;
-static ui_item_t s_stats_gx_item, s_stats_ntc_item;
+enum { STAT_PDO, STAT_REQ, STAT_CUR, STAT_VBUS, STAT_GX, STAT_NTC, STAT_COUNT };
+static ui_item_t s_stats_items[STAT_COUNT];
 static ui_item_t s_settings_item;
 static ui_item_t s_settings_icons_back_item;
 static ui_item_t s_settings_detail_item;
@@ -34,38 +33,20 @@ static ui_item_t s_about_item;
 static ui_item_t s_burnin_item;
 static ui_item_t s_dino_item;
 
-/* IH01A-style persistent, allocation-free read-only rows. Neither the
- * statistics page nor its periodic refresh performs any I2C transaction. */
-static char s_stats_pdo[20] = " PDO: --";
-static char s_stats_req[20] = " Req: --";
-static char s_stats_current[20] = " Cur: --";
-static char s_stats_vbus[20] = " VBUS: --";
-static char s_stats_gx[20];
-static char s_stats_ntc[20];
+/* Numeric data mirrors. No per-row display strings and no UI bus access. */
+static int s_stats_value[STAT_COUNT];
+static uint8_t s_stats_has[STAT_COUNT];
+static ui_data_t s_stats_data[STAT_COUNT];
+static ui_element_t s_stats_element[STAT_COUNT];
 static uint32_t s_statistics_poll_ms;
 static uint8_t s_statistics_valid;
-
-/* Fixed-point signed tenths; keep negative fractional values (e.g. -0.1C). */
-static void statistics_temperature(char *buf, const char *name, uint8_t valid, int16_t x10)
-{
-    if(!valid)
-        (void)snprintf(buf, 20u, "%s: --.-C", name);
-    else
-    {
-        unsigned mag = (unsigned)(x10 < 0 ? -(int32_t)x10 : x10);
-        (void)snprintf(buf, 20u, "%s: %s%u.%uC", name,
-                       x10 < 0 ? "-" : "", mag / 10u, mag % 10u);
-    }
-}
 
 void Statistics_Poll(void)
 {
     uint32_t now = TIME_Millis();
-    uint32_t mv;
-    uint32_t ma;
     int32_t milli_c;
     int16_t ntc_x10 = 0;
-    uint8_t ntc_valid;
+    uint8_t ready;
     const GX21M15_Handle *gx = APP_GetGX21M15();
 
     if(s_statistics_valid && (uint32_t)(now - s_statistics_poll_ms) < 200u)
@@ -74,51 +55,50 @@ void Statistics_Poll(void)
     s_statistics_valid = 1u;
     s_statistics_poll_ms = now;
     milli_c = GX21M15_ReadTemperatureMilliC(gx);
-    statistics_temperature(s_stats_gx, " GX21M15", GX21M15_IsOnline(gx),
-        (int16_t)((milli_c >= 0 ? milli_c + 50 : milli_c - 50) / 100));
-    ntc_valid = SW3538_ReadNTCTemperatureX10(APP_GetSW3538(), &ntc_x10);
-    statistics_temperature(s_stats_ntc, " SW3538", ntc_valid, ntc_x10);
-    mv = VBUS_Sense_ReadMillivolts();
-    (void)snprintf(s_stats_vbus, sizeof(s_stats_vbus),
-                   " VBUS %lu.%02luV", (unsigned long)(mv / 1000u),
-                   (unsigned long)((mv % 1000u) / 10u));
+    s_stats_has[STAT_GX] = GX21M15_IsOnline(gx);
+    s_stats_value[STAT_GX] = (int)((milli_c >= 0 ? milli_c + 50 : milli_c - 50) / 100);
+    s_stats_has[STAT_NTC] = SW3538_ReadNTCTemperatureX10(APP_GetSW3538(), &ntc_x10);
+    s_stats_value[STAT_NTC] = ntc_x10;
+    s_stats_has[STAT_VBUS] = 1u;
+    s_stats_value[STAT_VBUS] = (int)(VBUS_Sense_ReadMillivolts() / 10u);
 
-    /* Selection happens before PS_RDY; do not report an in-flight Request
-     * as an active PD contract. Detached inputs still show the ADC VBUS. */
+    ready = (uint8_t)(PD_IsConnected() && PD_IsPowerReady());
+    s_stats_has[STAT_PDO] = ready;
+    s_stats_has[STAT_REQ] = ready;
+    s_stats_has[STAT_CUR] = ready;
     if(!PD_IsConnected())
-    {
-        (void)snprintf(s_stats_pdo, sizeof(s_stats_pdo), " PDO: DC/--");
-        (void)snprintf(s_stats_req, sizeof(s_stats_req), " Req: --");
-        (void)snprintf(s_stats_current, sizeof(s_stats_current), " Cur: --");
-    }
-    else if(!PD_IsPowerReady())
-    {
-        (void)snprintf(s_stats_pdo, sizeof(s_stats_pdo), " PDO: NEG");
-        (void)snprintf(s_stats_req, sizeof(s_stats_req), " Req: --");
-        (void)snprintf(s_stats_current, sizeof(s_stats_current), " Cur: --");
-    }
+        s_stats_items[STAT_PDO].itemName = " PDO (DC)";
+    else if(!ready)
+        s_stats_items[STAT_PDO].itemName = " PDO (NEG)";
     else
     {
-        mv = PD_GetContractVoltageMv();
-        ma = PD_GetContractCurrentMa();
-        (void)snprintf(s_stats_pdo, sizeof(s_stats_pdo), " PDO#%u %s",
-                       (unsigned)PD_GetRequestedPDOIndex(),
-                       PD_IsEPRContractActive() ? "EPR" :
-                       (PD_IsPPSContractActive() ? "PPS" : "SPR"));
-        (void)snprintf(s_stats_req, sizeof(s_stats_req),
-                       " Req %lu.%02luV", (unsigned long)(mv / 1000u),
-                       (unsigned long)((mv % 1000u) / 10u));
-        (void)snprintf(s_stats_current, sizeof(s_stats_current),
-                       " Cur %lu.%02luA", (unsigned long)(ma / 1000u),
-                       (unsigned long)((ma % 1000u) / 10u));
+        s_stats_items[STAT_PDO].itemName = PD_IsEPRContractActive() ? " PDO (EPR)" :
+                                  PD_IsPPSContractActive() ? " PDO (PPS)" : " PDO (SPR)";
+        s_stats_value[STAT_PDO] = PD_GetRequestedPDOIndex();
+        s_stats_value[STAT_REQ] = (int)(PD_GetContractVoltageMv() / 10u);
+        s_stats_value[STAT_CUR] = (int)(PD_GetContractCurrentMa() / 10u);
     }
 }
 
-/* Tapping a read-only row returns to Statistics instead of opening Text_Widget. */
-static void statistics_readonly(ui_t *ui)
+static void statistics_add_rows(void)
 {
-    if(ui != 0 && ui->action == UI_ACTION_NONE)
-        ui->action = UI_ACTION_BACK;
+    static const char *const names[STAT_COUNT] = {
+        " PDO (DC)", " Req (V)", " Cur (A)", " VBUS (V)", " GX21M15 (C)", " SW3538 (C)"
+    };
+    uint8_t n;
+    for(n = 0u; n < STAT_COUNT; ++n)
+    {
+        ui_data_t *data = &s_stats_data[n];
+        data->ptr = &s_stats_value[n];
+        data->valid = &s_stats_has[n];
+        data->actionType = UI_DATA_ACTION_RO;
+        data->dataType = (n == STAT_PDO) ? UI_DATA_INT : UI_DATA_FIXED;
+        data->decimals = (n == STAT_PDO) ? 0u : (n >= STAT_GX ? 1u : 2u);
+        s_stats_element[n].data = data;
+        AddItem(names[n], UI_ITEM_DATA, 0, &s_stats_items[n], &s_statistics_page, 0, 0);
+        Create_element(&s_stats_items[n], &s_stats_element[n]);
+    }
+    Statistics_Poll();
 }
 
 void Create_Parameter(ui_t *ui)
@@ -176,19 +156,7 @@ void Create_MenuTree(ui_t *ui)
         AddPage("[Statistics]", &s_statistics_page, UI_PAGE_TEXT, &s_main_page);
         AddItem("[Menu]", UI_ITEM_RETURN, 0, &s_statistics_back_item,
                 &s_statistics_page, &s_main_page, 0);
-        Statistics_Poll();
-        AddItem(s_stats_pdo, UI_ITEM_WORD, 0, &s_stats_pdo_item,
-                &s_statistics_page, 0, statistics_readonly);
-        AddItem(s_stats_req, UI_ITEM_WORD, 0, &s_stats_req_item,
-                &s_statistics_page, 0, statistics_readonly);
-        AddItem(s_stats_current, UI_ITEM_WORD, 0, &s_stats_current_item,
-                &s_statistics_page, 0, statistics_readonly);
-        AddItem(s_stats_vbus, UI_ITEM_WORD, 0, &s_stats_vbus_item,
-                &s_statistics_page, 0, statistics_readonly);
-        AddItem(s_stats_gx, UI_ITEM_WORD, 0, &s_stats_gx_item,
-                &s_statistics_page, 0, statistics_readonly);
-        AddItem(s_stats_ntc, UI_ITEM_WORD, 0, &s_stats_ntc_item,
-                &s_statistics_page, 0, statistics_readonly);
+        statistics_add_rows();
 
     AddItem("-Burn-in Test", UI_ITEM_WORD, img_burn_in,
             &s_burnin_item, &s_main_page, 0, Burnin_Page);

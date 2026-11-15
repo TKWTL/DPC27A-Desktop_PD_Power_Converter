@@ -68,7 +68,7 @@ void ParameterSetting_Widget(ui_t *ui)
         case UI_DATA_INT:
             snprintf(value, sizeof(value), "%s:%d ", ui->nowItem->element->data->name, *(int *)(ui->nowItem->element->data->ptr));
             break;
-        case UI_DATA_FLOAT:
+        case UI_DATA_FIXED:
         {
             /* 定点整数：真实值 = 值 / 10^decimals（无 FPU，不用 %f） */
             char num[16];

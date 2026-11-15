@@ -22,6 +22,7 @@
 #include "ui_conf.h"
 #include "Pages/port_pages.h"
 #include "core/ui.h"
+#include "indev/indevDriver.h"
 #include "display/dispDriver.h"
 #include "time_api.h"
 
@@ -104,7 +105,8 @@ THRD_DECLARE(thread_vbus)
 }
 
 #define UI_FRAME_PERIOD_MS         6u
-#define UI_KEY_SERVICE_MS          10u
+#define UI_KEY_SERVICE_MS          KEY_SERVICE_PERIOD_MS
+#define UI_DISPATCH_MS             2u
 #define PD_STARTUP_QUIET_WINDOW_MS 1000u
 
 /* The OLED panel is reset by an external RC network only; it must not see its
@@ -123,7 +125,7 @@ static uint32_t s_app_boot_ms;
 /* USB-PD GoodCRC reception is a sub-millisecond timing path.  During initial
  * SPR/EPR negotiation, nonessential display and telemetry traffic can create a
  * dense SPI/I2C/DMA interrupt load.  Keep the first negotiation window quiet;
- * after a valid power contract is ready, all normal UI and 500 ms telemetry
+ * after a valid power contract is ready, all normal UI and 333 ms telemetry
  * work resumes.  If a non-PD/DC source is used, the timeout prevents the UI
  * from being suppressed indefinitely. */
 static uint8_t APP_NoncriticalIOAllowed(void)
@@ -145,8 +147,7 @@ static uint8_t APP_NoncriticalIOAllowed(void)
  * press may wake the device: the release edge, the DAS repeats of a held key
  * and the latched KeyState_Release of the key that requested the sleep must
  * not light the screen up again (that was the "manual sleep comes back on
- * immediately" bug).  Reading the edge is non-consuming - indevScan() still
- * sees the event once the UI runs again. */
+ * immediately" bug).  Reading the edge is non-consuming; the wake gesture is not queued. */
 static uint8_t app_pm_wake_key_pressed(void)
 {
     uint8_t i;
@@ -184,6 +185,7 @@ static uint8_t app_pm_key_active(void)
 THRD_DECLARE(thread_ui)
 {
     static uint32_t key_service_ms;
+    static uint32_t frame_ms;
     static uint32_t now_ms;
     static uint32_t pm_sleep_ms;
     static uint8_t pm_sleep_seen;
@@ -206,58 +208,51 @@ THRD_DECLARE(thread_ui)
     Key_Init();
     MiaoUi_Setup(&ui);
     key_service_ms = TIME_Millis();
+    frame_ms = key_service_ms;
+    indevReset();
 #if DPC_DIAGNOSTICS_ENABLE
     printf("[OLED] SH1107 ready: logical 128x80, native 80x128, external VPP, charge pump disabled\r\n");
 #endif
 
     while(1)
     {
-        THRD_DELAY(UI_FRAME_PERIOD_MS);
+        THRD_DELAY(UI_DISPATCH_MS);
         now_ms = TIME_Millis();
 
-        /* Key tick = a true 10 ms grid.  The UI frame was 8 ms (now 6 ms), so a plain
-         * "elapsed >= 10 ms" test only fired on every second frame (~16 ms,
-         * drifting with frame load): the 1 s long press became ~1.6 s and the
-         * 80 ms DAS repeat became ~128 ms, so a held DOWN key looked dead.
-         * Advance the deadline by exactly one tick per service (bounded
-         * catch-up; resync if the thread was starved for long). */
+        /* Independent 8 ms key grid and 6 ms draw grid. A delayed dispatch
+         * advances counters (bounded) but never invents GPIO observations. */
+        uint8_t scanned = 0u;
         if((uint32_t)(now_ms - key_service_ms) >= UI_KEY_SERVICE_MS)
         {
             uint8_t catch_up = 0u;
-
             do
             {
                 key_service_ms += UI_KEY_SERVICE_MS;
-                Key_DebounceService_10ms();
+                Key_DebounceService_8ms();
                 ++catch_up;
             } while(((uint32_t)(now_ms - key_service_ms) >= UI_KEY_SERVICE_MS) && (catch_up < 4u));
 
             if((uint32_t)(now_ms - key_service_ms) >= UI_KEY_SERVICE_MS)
-                key_service_ms = now_ms;   /* starved: resync the grid */
+                key_service_ms = now_ms;
 
             Key_Scand();
+            scanned = 1u;
         }
 
         if(pm_api_ui_should_block() || (pm_api_is_unstable_wake() != 0u))
         {
-            /* UI_OFF: the display hook already blanked the panel and drawing
-             * stays paused.  A fresh key press is a wake-up request here - the
-             * action is swallowed so it cannot also trigger the menu (this
-             * also covers the ~100 ms silence right after a wake).
-             *
-             * Arming delay: the press that requested the sleep and its
-             * release/DAS events must not wake the device again, so key
-             * wake-ups are ignored for PM_WAKE_ARM_MS after entering UI_OFF. */
             if(pm_sleep_seen == 0u)
             {
                 pm_sleep_seen = 1u;
                 pm_sleep_ms = now_ms;
             }
 
-            if(((uint32_t)(now_ms - pm_sleep_ms) >= PM_WAKE_ARM_MS) &&
+            if(scanned && ((uint32_t)(now_ms - pm_sleep_ms) >= PM_WAKE_ARM_MS) &&
                (app_pm_wake_key_pressed() != 0u))
                 pm_api_wake_from_activity();
 
+            /* Swallow the entire wake gesture, including its later release. */
+            indevReset();
             ui.action = UI_ACTION_NONE;
         }
         else
@@ -266,13 +261,24 @@ THRD_DECLARE(thread_ui)
 
             if(APP_NoncriticalIOAllowed())
             {
-                /* Any key press/hold counts as activity for the power manager
-                 * (the check is non-consuming, see app_pm_key_active()). */
-                if(app_pm_key_active() != 0u)
-                    pm_api_refresh_idle();
+                if(scanned)
+                {
+                    if(app_pm_key_active() != 0u)
+                        pm_api_refresh_idle();
+                    indevPoll();
+                }
 
-                Statistics_Poll(); /* 200 ms throttle; no bus access */
-                ui_loop(&ui);
+                if((uint32_t)(now_ms - frame_ms) >= UI_FRAME_PERIOD_MS)
+                {
+                    frame_ms = now_ms; /* no catch-up rendering burst */
+                    Statistics_Poll();
+                    ui_loop(&ui);
+                }
+            }
+            else
+            {
+                indevReset();
+                ui.action = UI_ACTION_NONE;
             }
         }
     }
@@ -302,7 +308,7 @@ THRD_DECLARE(thread_i2c_watchdog)
     THRD_END;
 }
 
-#define POWER_MIRROR_POLL_MS     500u   /* SW3538 / SW3526 power telemetry */
+#define POWER_MIRROR_POLL_MS     333u   /* SW3538 / SW3526 power telemetry */
 #define TEMP_MIRROR_POLL_MS      500u   /* GX21M15U temperature mirror */
 #define POLL_PHASE_POWER_MS       50u
 #define POLL_PHASE_GX21M15_MS    300u
@@ -432,7 +438,6 @@ static void app_proto_reinit_on_edge(void)
  * I2C) are refreshed back-to-back, then the power budget is re-allocated. */
 THRD_DECLARE(thread_power_mirror)
 {
-    static uint32_t cycle_start_ms;
     static uint8_t share[PWR_ALLOC_CHIPS];
     static uint8_t meas_w[PWR_ALLOC_CHIPS];  /* measured output power: 3538 / C1 / C2 */
     static uint8_t w0;
@@ -446,7 +451,6 @@ THRD_DECLARE(thread_power_mirror)
     THRD_DELAY(POLL_PHASE_POWER_MS);
     while(1)
     {
-        cycle_start_ms = TIME_Millis();
         if(APP_NoncriticalIOAllowed())
         {
             THRD_SPAWN_ARGS(SW3538_StatusLoad, &s_sw3538);
@@ -579,23 +583,20 @@ THRD_DECLARE(thread_power_mirror)
 #endif
             }
         }
-        /* Async I/O counts toward the period; no queued catch-up cycles. */
-        THRD_UNTIL((uint32_t)(TIME_Millis() - cycle_start_ms) >= POWER_MIRROR_POLL_MS);
+        THRD_DELAY(POWER_MIRROR_POLL_MS);
     }
     THRD_END;
 }
 
 THRD_DECLARE(thread_gx21m15)
 {
-    static uint32_t cycle_start_ms;
     THRD_BEGIN;
     THRD_DELAY(POLL_PHASE_GX21M15_MS);
     while(1)
     {
-        cycle_start_ms = TIME_Millis();
         if(APP_NoncriticalIOAllowed())
             THRD_SPAWN_ARGS(GX21M15_TemperatureLoad, &s_gx21m15);
-        THRD_UNTIL((uint32_t)(TIME_Millis() - cycle_start_ms) >= TEMP_MIRROR_POLL_MS);
+        THRD_DELAY(TEMP_MIRROR_POLL_MS);
     }
     THRD_END;
 }
@@ -683,7 +684,7 @@ THRD_DECLARE(thread_fan)
  * A steady >5 W output blocks automatic sleep but must not wake UI_OFF. */
 #define PM_ACTIVITY_WAKE_DELTA_MW 2000u
 
-/* Total output power from the 500 ms power mirrors (same integer math as the
+/* Total output power from the 333 ms power mirrors (same integer math as the
  * dashboard: SW3538 column = shared VOUT x both port currents). */
 static uint32_t app_output_power_mw(void)
 {

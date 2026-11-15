@@ -126,9 +126,10 @@ typedef enum{
 
 typedef enum{
     UI_DATA_INT,      // 整型数据（ptr -> int）
-    UI_DATA_FLOAT,     // 定点数据：ptr -> int，真实值 = 值 / 10^decimals（无 FPU）
+    UI_DATA_FIXED,     // 定点数据：ptr -> int，真实值 = 值 / 10^decimals（无 FPU）
     UI_DATA_SWITCH,    // 开关类型数据
-    UI_DATA_STRING     // 字符串类型数据
+    UI_DATA_STRING,    // 字符串类型数据
+    UI_DATA_FLOAT = UI_DATA_FIXED  // 兼容旧名称与枚举值；不是 float
 } UI_DATA_TYPE;
 
 typedef enum{
@@ -150,8 +151,9 @@ typedef struct {
     #endif
     int max;    //data->max == group_id 表示 组号（同组互斥）
     int min;    //data->min == 1 表示 radio 模式启用
-    int step;   // 步进值（UI_DATA_FLOAT 时为缩放整数，单位同 ptr 指向的值）
-    uint8_t decimals; // UI_DATA_FLOAT 的显示小数位（0~3），其余类型忽略
+    int step;   // 步进值（UI_DATA_FIXED 时为缩放整数，单位同 ptr 指向的值）
+    uint8_t decimals; // UI_DATA_FIXED 小数位 0~3
+    const uint8_t *valid; // 可选数字有效标志；NULL 表示始终有效
 } ui_data_t;
 
 typedef struct {
@@ -382,7 +384,7 @@ void Create_Parameter(ui_t *ui);
 void Create_Text(ui_t *ui);
 void Create_MenuTree(ui_t *ui);
 void MiaoUi_Setup(ui_t *ui);
-/* Updates the cached PD PDO request and VBUS statistics rows (200 ms grid). */
+/* Updates the cached numeric PD, VBUS and temperature statistics rows (200 ms grid). */
 void Statistics_Poll(void);
 
 #ifdef __cplusplus

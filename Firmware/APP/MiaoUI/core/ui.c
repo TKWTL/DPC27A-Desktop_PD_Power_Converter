@@ -239,38 +239,41 @@ int easeInOutCirc(int t, int b, int c, int d)
  * @brief 定点数显示：把“缩放整数 value / 10^decimals”写成字符串
  *
  * 项目不再使用 %f（无 FPU，且已用自研整数 printf 替掉软浮点 printf），
- * 所有浮点显示统一走这个函数，UI 数据项用 UI_DATA_FLOAT + decimals 描述。
+ * 所有浮点显示统一走这个函数，UI 数据项用 UI_DATA_FIXED + decimals 描述。
  */
 void UI_FmtScaled(char *buf, size_t size, int32_t value, uint8_t decimals)
 {
-    uint32_t mag;
-    const char *sign = "";
+    char reversed[12];
+    uint32_t mag = value < 0 ? 0u - (uint32_t)value : (uint32_t)value;
+    uint8_t n = 0u, digits = 0u;
+    size_t pos = 0u;
+
+    if(size == 0u)
+        return;
+    if(decimals > 3u)
+        decimals = 0u;
+
+    /* Build least significant digit first, keeping leading fractional zeros.
+     * The largest signed 32-bit representation needs 12 chars plus NUL. */
+    do
+    {
+        reversed[n++] = (char)('0' + mag % 10u);
+        mag /= 10u;
+        ++digits;
+        if(decimals && digits == decimals)
+            reversed[n++] = '.';
+    } while(mag || digits <= decimals);
 
     if(value < 0)
+        reversed[n++] = '-';
+    if(n >= size)
     {
-        sign = "-";
-        mag = (uint32_t)0 - (uint32_t)value;
+        buf[0] = '\0'; /* never pass a misleading truncated number to UI */
+        return;
     }
-    else
-    {
-        mag = (uint32_t)value;
-    }
-
-    switch(decimals)
-    {
-    case 1:
-        snprintf(buf, size, "%s%u.%01u", sign, (unsigned)(mag / 10u), (unsigned)(mag % 10u));
-        break;
-    case 2:
-        snprintf(buf, size, "%s%u.%02u", sign, (unsigned)(mag / 100u), (unsigned)(mag % 100u));
-        break;
-    case 3:
-        snprintf(buf, size, "%s%u.%03u", sign, (unsigned)(mag / 1000u), (unsigned)(mag % 1000u));
-        break;
-    default:
-        snprintf(buf, size, "%s%u", sign, (unsigned)mag);
-        break;
-    }
+    while(n)
+        buf[pos++] = reversed[--n];
+    buf[pos] = '\0';
 }
 
 
@@ -438,7 +441,7 @@ void Draw_Scrollbar(ui_t *ui, uint16_t x, uint16_t y, uint16_t w, uint16_t h, ui
     switch (data->dataType)
     {
     case UI_DATA_INT:
-    case UI_DATA_FLOAT:   /* 定点整数：与 INT 同构 */
+    case UI_DATA_FIXED:   /* 定点整数：与 INT 同构 */
     {
         int *pv = (int *)data->ptr;
         int span = data->max - data->min;
@@ -783,44 +786,57 @@ static void Draw_TextPage(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item, ui_ite
 
         if (temp_item->animationY >= -UI_FX(UI_FONT_HIGHT) && temp_item->animationY <= UI_FX(UI_VER_RES + UI_FONT_HIGHT))
         {
-            if (temp_item->itemType == UI_ITEM_DATA && temp_item->element != NULL)
+            if (temp_item->itemType == UI_ITEM_DATA && temp_item->element != NULL &&
+                temp_item->element->data != NULL)
             {
-                char Data[12] = {0};
+                const ui_data_t *data = temp_item->element->data;
+                char Data[16] = {0};
+                uint16_t y = (uint16_t)UI_FXI(temp_item->animationY);
                 Disp_SetClipWindow(UI_DATA_X0, UI_DATA_Y0, UI_DATA_X1, UI_DATA_Y1);
 
-                switch (temp_item->element->data->dataType)
+                switch (data->dataType)
                 {
                 case UI_DATA_INT:
-                    snprintf(Data, sizeof(Data), "%d", *(int *)(temp_item->element->data->ptr));
-                    break;
+                case UI_DATA_FIXED:
+                {
+                    uint8_t decimals = (data->dataType == UI_DATA_FIXED) ? data->decimals : 0u;
+                    unsigned width;
+                    const char *text = Data;
 
-                case UI_DATA_FLOAT:
-                    /* 定点整数：真实值 = 值 / 10^decimals，不再用 %f */
-                    UI_FmtScaled(Data, sizeof(Data), *(int *)(temp_item->element->data->ptr),
-                                 temp_item->element->data->decimals);
+                    if(data->ptr == NULL || (data->valid && !*data->valid))
+                        text = "--";
+                    else
+                        UI_FmtScaled(Data, sizeof(Data), *(const int *)data->ptr, decimals);
+
+                    width = (unsigned)strlen(text) * UI_FONT_WIDTH;
+                    /* Refuse to show a clipped/misleading numeric value. */
+                    if(width == 0u || width > (UI_DATA_X1 - UI_DATA_X0))
+                    {
+                        text = "OVF";
+                        width = 3u * UI_FONT_WIDTH;
+                    }
+                    Disp_DrawStr((uint16_t)(UI_DATA_X1 - width), y, text);
                     break;
+                }
 
                 case UI_DATA_SWITCH:
                     Disp_DrawRFrame(UI_DATA_X0, (uint16_t)(UI_FXI(temp_item->animationY) - UI_FONT_HIGHT + 3), UI_FONT_HIGHT, UI_FONT_HIGHT, 2);
-                    if (*(uint8_t *)temp_item->element->data->ptr == true)
-                    {
+                    if (data->ptr && *(uint8_t *)data->ptr == true)
                         Disp_DrawRBox(UI_DATA_X0 + 2, (uint16_t)(UI_FXI(temp_item->animationY) - UI_FONT_HIGHT + 5), UI_FONT_HIGHT - 4, UI_FONT_HIGHT - 4, 2);
-                    }
                     break;
 
                 case UI_DATA_STRING:
-                    if (temp_item->element->data->ptr != NULL)
+                    if(data->ptr)
                     {
-                        strncpy(Data, (char *)(temp_item->element->data->ptr), sizeof(Data) - 1);
+                        strncpy(Data, (const char *)data->ptr, sizeof(Data) - 1);
                         Data[sizeof(Data) - 1] = '\0';
+                        Disp_DrawStr(UI_DATA_X0, y, Data);
                     }
                     break;
 
                 default:
                     break;
                 }
-
-                if (temp_item->element->data->dataType != UI_DATA_SWITCH) Disp_DrawStr(UI_DATA_X0, (uint16_t)UI_FXI(temp_item->animationY), Data);
             }
             Disp_SetClipWindow(UI_TITLE_X0, UI_TITLE_Y0, UI_TITLE_X1, UI_TITLE_Y1);
 
@@ -1033,6 +1049,14 @@ static void Process_UI_Run(ui_t *ui, UI_ACTION Action)
                     }
                     break;
                 case UI_ACTION_ENTER:
+                    /* Read-only data lives in the list; ENTER is a no-op. */
+                    if(ui->nowItem && ui->nowItem->itemType == UI_ITEM_DATA &&
+                       ui->nowItem->element && ui->nowItem->element->data &&
+                       ui->nowItem->element->data->actionType == UI_DATA_ACTION_RO)
+                    {
+                        Draw_UI(ui, ui->nowItem->page.location, ui->nowItem, ui->nowItem);
+                        break;
+                    }
                     if(ui->nowItem != NULL && ui->nowItem->itemType == UI_ITEM_PARENTS)//当前项非空且为父项时，进入下一级菜单
                     {
                         // 避免重复状态改变
@@ -1160,7 +1184,7 @@ static void Process_App_Run(ui_t *ui, ui_item_t *item, UI_ACTION Action)
                 switch (item->element->data->dataType)
                 {
                 case UI_DATA_INT:
-                case UI_DATA_FLOAT:
+                case UI_DATA_FIXED:
                     if (item->itemFunction == NULL) ParameterSetting_Widget(ui);
                     else (item->itemFunction)(ui); //执行项目的函数
                     if(ui->action == UI_ACTION_ENTER || ui->action == UI_ACTION_BACK)//退出项目
@@ -1233,7 +1257,9 @@ static void Process_App_Run(ui_t *ui, ui_item_t *item, UI_ACTION Action)
  */
 void ui_loop(ui_t *ui)
 {
-    UI_ACTION Action = indevScan(); // 扫描按钮方向，确定菜单操作方向
+    /* These two states ignore actions: leave queued input for the next frame. */
+    UI_ACTION Action = (ui->menuState == UI_PAGE_INIT || ui->menuState == UI_ITEM_EXIT)
+                         ? UI_ACTION_NONE : indevScan();
     if (ui->menuState == UI_PAGE_INIT)
     {
         ui->menuState = UI_PAGE_RUNING;

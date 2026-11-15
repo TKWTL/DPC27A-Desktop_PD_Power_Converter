@@ -1,7 +1,7 @@
 /* Dashboard page for the Desktop PD Power Converter.
  *
  * This is the function page the UI boots into.  It is a pure consumer of the
- * device mirrors (500 ms power telemetry, 500 ms temperature): the UI never
+ * device mirrors (333 ms power telemetry, 500 ms temperature): the UI never
  * touches I2C itself, so the page only formats cached telemetry.
  *
  * Layout (128x80 panel, 6x12 font, 21 characters per line):

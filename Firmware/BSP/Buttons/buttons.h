@@ -43,7 +43,8 @@ typedef struct
 {
     uint8_t CurrIOState;
     uint8_t LastIOState;
-    uint8_t DebounceCounter;
+    uint8_t DebounceCounter; /* raw level stability only */
+    uint8_t PressCounter;    /* independent long-press/DAS timer */
     uint8_t MultiClick;
     uint8_t ClickCounter;
     KeyState_t State;
@@ -59,7 +60,8 @@ typedef enum
 } KeyIndex_t;
 
 void Key_Init(void);
-void Key_DebounceService_10ms(void);
+#define KEY_SERVICE_PERIOD_MS 8u
+void Key_DebounceService_8ms(void);
 void Key_Scand(void);
 KeyEdge_t Key_EdgeDetect(KeyIndex_t key);
 KeyState_t KEY_GetState(KeyIndex_t key);

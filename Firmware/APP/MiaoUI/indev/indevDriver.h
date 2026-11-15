@@ -33,6 +33,10 @@ extern "C" {
 
 #include "ui_conf.h"
 
+/* Called exactly once after each enabled Key_Scand(); reset while blocked. */
+void indevPoll(void);
+void indevReset(void);
+/* Consume at most one queued action per UI frame. */
 UI_ACTION indevScan(void);
 
 #ifdef __cplusplus

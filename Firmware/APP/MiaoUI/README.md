@@ -91,7 +91,7 @@
 
 刻意只用两键:K1 = DOWN(页面导航;在数值编辑弹窗内递增数值),
 K2 = ENTER/确认 **抬起触发**(`indevScan()` 在 K2 松开时才发 ENTER,按住不会连发),
-**长按(1 s,键仍按住时)发一次 UI_BACK**:子菜单/弹窗回到上一级、根菜单立即休眠;
+**长按(约 800 ms,键仍按住时)发一次 UI_BACK**:子菜单/弹窗回到上一级、根菜单立即休眠;
 长按过的那次按下的松开不会再触发 ENTER。唤醒用的那次按下属于电源框架
 (UI_OFF 期间不跑 `indevScan()`,不受抬起触发影响),其松开不会误触发页面上的 ENTER。
 Dashboard 页内 K1 被忽略,按 K2(短按)返回图标菜单,长按同样返回(强制退出)。
@@ -114,9 +114,16 @@ Dashboard 页内 K1 被忽略,按 K2(短按)返回图标菜单,长按同样返�
 - 主 Settings (`UI_PAGE_ICON`) 首位为 `[Menu]` 返回图标，使用已有 `img_home`；其后依次为 TypeA+C、TypeC1、TypeC2 与第二层 Settings。两级 Settings **复用同一个** `img_configuration` 常量，不复制位图。第二层进入原先的 `UI_PAGE_TEXT` 设置页（Sleep、Display、Fan/Reset/ISP）。
 - 三个端口设置页面的返回指向 Settings 图标页；文本设置页返回同样指向该页。图标页使用现有 BACK 操作返回上一级；根菜单 BACK→手动关屏行为不变。
 - Statistics (`UI_PAGE_TEXT`) 采用 IH01A 的 `img_statistics` 30×30 XBM 资源（GPL-3.0-or-later），并显示 PD 已选 PDO 序号及 SPR/PPS/EPR、申请电压/电流、VBUS 实测值。未连接 / 协商中显示占位符，不将未完成协商报告为有效合同。
-- 静态字符数组由 `Statistics_Poll()` 最多每 200 ms 更新，读取 PD 状态、PA7 VBUS ADC 与 500 ms GX21M15/SW3538 NTC 镜像，不发起 I²C 访问。标签使用较短 ASCII 文本以适配 DPC27A 的 128×80 屏及固定 6 px 字体；不移植 IH01A 的中文字体与 UI 像素布局。
+- 当前改为数值镜像（见下方最新修订），由 `Statistics_Poll()` 最多每 200 ms 更新，读取 PD 状态、PA7 VBUS ADC 与 GX21M15/SW3538 NTC 镜像，不发起 I²C 访问。标签使用较短 ASCII 文本以适配 DPC27A 的 128×80 屏及固定 6 px 字体；不移植 IH01A 的中文字体与 UI 像素布局。
 - 图标素材沿用原仓库的 GPL-3.0-or-later 声明；本次只额外引入一张 Statistics 图（120 字节原始 XBM）。实际 Flash 差额需以编译后的 `.map` 为准。
 
 尚未在目标硬件验证菜单层级、按钮返回与 PD 实时显示。
 
 2026-11-15：Statistics 在 VBUS 后追加 ` GX21M15: xx.xC` 与 ` SW3538: xx.xC` 两个只读文本行，未就绪/离线/NTC 无效显示 `--.-C`；使用原生文本页滚动。UI 执行间隔 8→6 ms，独立按键 10 ms 和游戏 16 ms 不改；老化测试说明使用 2400 ms 实际时间。暂不接入中文化，i18n 清单仅增加两个保留英文的型号键。
+
+### 2026-11-15：定点数值栏与按键时序（最新）
+
+- `UI_DATA_FIXED`（旧名 `UI_DATA_FLOAT` 为相同枚举值）用 `int *ptr` 保存缩放后的整数，`decimals=0..3` 选择小数位；`UI_DATA_INT` 同用 `UI_FmtScaled()`，无浮点或 printf 格式化。例：2800/2→28.00、-1/1→-0.1、1250/1→125.0。可选 `valid` 指向 uint8_t，有效为非零，NULL 表示始终有效；数据指针空或无效显示 `--`。右栏 86..118 px，按 6 px 字宽右对齐，最多 5 字符，超宽显示 `OVF`，不截断数字；单位放标题内。兼容旧 RW 弹窗、开关、字符串项。RO 项 ENTER 不进入弹窗，BACK 正常返回。
+- Statistics 6 项均为 UI_ITEM_DATA + RO：PDO 为 INT（左标签标明 DC/NEG/SPR/PPS/EPR），Req (V)/Cur (A)/VBUS (V) 为 FIXED 2 位；GX21M15 (C)/SW3538 (C) 为 FIXED 1 位。仍是 200 ms 镜像读取，无额外 I²C 访问，NTC 随 333 ms 延时电源镜像采样，GX21M15 随 500 ms 延时温度镜像采样。
+- UI 6 ms 与按键 8 ms 独立调度，2 ms 协程派发；每次实际扫描生成一次事件，4 项队列向 UI 一次交付一项。无阻塞补帧、休眠/PD quiet 清队列，唤醒手势不进入菜单。长按 800 ms、K1 DAS 96 ms、K2 DAS 参数 128 ms（K2 UI 仍只有一次 BACK）、消抖 16 ms。实际时间受调度和绘制耗时影响。
+- 尚未上板验证快速点击、菜单滚动、显示裁剪与编译占用。

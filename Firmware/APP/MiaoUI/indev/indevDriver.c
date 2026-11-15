@@ -7,19 +7,52 @@
  *   - hold past the threshold -> one UI_ACTION_BACK (fired while the key is
  *     still held) and the release of that press is swallowed, so a long press
  *     can never confirm something as well;
- *   - only a press this scanner has seen (KeyEdge_Rising) can produce an
+ *   - only a press this adapter has seen (KeyEdge_Rising) can produce an
  *     action: the K2 press that wakes a sleeping panel is handled by the power
- *     manager (ui_loop()/indevScan() do not run while the UI is off), so its
+ *     manager (indevPoll() is not called while the UI is off), so its
  *     release must not fire ENTER on the page that just lit up; presses that
  *     start while the UI is blocked (PD quiet window) are dropped too. */
 #include "indev/indevDriver.h"
 #include "buttons.h"
 #include "core/ui.h"
 
-static uint8_t s_enter_down;   /* K2 press seen by the scanner */
-static uint8_t s_enter_back;   /* ... already consumed as a long press (BACK) */
+/* Poll once per actual GPIO scan; draw may run more or less often.
+ * Queue is bounded; keep ENTER/BACK ahead of DOWN repeats on overflow. */
+#define INDEV_QUEUE_SIZE 4u
+static UI_ACTION s_queue[INDEV_QUEUE_SIZE];
+static uint8_t s_count;
+static uint8_t s_enter_down;
+static uint8_t s_enter_back;
+static uint8_t s_down_armed;
 
-UI_ACTION indevScan(void)
+static void enqueue(UI_ACTION action)
+{
+    uint8_t n;
+    if(s_count == INDEV_QUEUE_SIZE)
+    {
+        if(action == UI_ACTION_DOWN)
+            return;
+        for(n = 0u; n < s_count; ++n)
+            if(s_queue[n] == UI_ACTION_DOWN)
+                break;
+        if(n == s_count)
+            return;
+        for(; n + 1u < s_count; ++n)
+            s_queue[n] = s_queue[n + 1u];
+        --s_count;
+    }
+    s_queue[s_count++] = action;
+}
+
+void indevReset(void)
+{
+    s_count = 0u;
+    s_enter_down = 0u;
+    s_enter_back = 0u;
+    s_down_armed = 0u;
+}
+
+void indevPoll(void)
 {
     KeyEdge_t edge = Key_EdgeDetect(KeyIndex_Enter);
 
@@ -28,32 +61,37 @@ UI_ACTION indevScan(void)
         s_enter_down = 1u;
         s_enter_back = 0u;
     }
-    else if((edge == KeyEdge_Holding) && (s_enter_down != 0u) && (s_enter_back == 0u))
+    else if(edge == KeyEdge_Holding && s_enter_down && !s_enter_back)
     {
-        /* Long press recognised while K2 is still held: back one level.  The
-         * latch also keeps the one-shot edge from firing twice (the edge
-         * survives ~10 ms, the UI frame is 8 ms). */
         s_enter_back = 1u;
-        return UI_ACTION_BACK;
+        enqueue(UI_ACTION_BACK);
     }
     else if(edge == KeyEdge_Falling)
     {
-        uint8_t was_short = (uint8_t)((s_enter_down != 0u) && (s_enter_back == 0u));
-
+        if(s_enter_down && !s_enter_back)
+            enqueue(UI_ACTION_ENTER);
         s_enter_down = 0u;
         s_enter_back = 0u;
-
-        if(was_short != 0u)
-            return UI_ACTION_ENTER;
     }
 
-    if(KEY_GetDASClick(KeyIndex_Down))
-    {
-        /* Menus scroll with K1 and the numeric dialog in parameter.c treats
-         * DOWN as "+step" (its scrollbar wraps at both ends, so the one key
-         * covers the full range). */
-        return UI_ACTION_DOWN;
-    }
+    edge = Key_EdgeDetect(KeyIndex_Down);
+    if(edge == KeyEdge_Rising)
+        s_down_armed = 1u;
+    else if(edge == KeyEdge_Falling)
+        s_down_armed = 0u;
+    if(s_down_armed && KEY_GetDASClick(KeyIndex_Down))
+        enqueue(UI_ACTION_DOWN);
+}
 
-    return UI_ACTION_NONE;
+UI_ACTION indevScan(void)
+{
+    UI_ACTION action;
+    uint8_t n;
+    if(!s_count)
+        return UI_ACTION_NONE;
+    action = s_queue[0];
+    --s_count;
+    for(n = 0u; n < s_count; ++n)
+        s_queue[n] = s_queue[n + 1u];
+    return action;
 }
