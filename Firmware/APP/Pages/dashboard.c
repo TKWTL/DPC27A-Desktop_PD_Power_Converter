@@ -347,6 +347,9 @@ static void dash_fmt_row1_head(char *head, size_t size)
 
 /* Row 1 with its coordinates unchanged; the main icon menu calls this from
  * ui.c so the menu shows the same live status line (128x80 layout only). */
+/* Localization invariant: this shared status line and Dashboard_Page keep
+ * their original ASCII text, fixed-width font and geometry in all languages.
+ * Only the menu entry -Dashboard may be translated (see APP/I18N.md). */
 void Dashboard_DrawStatusLine(const ui_t *ui)
 {
     char head[DASH_TEXT_LEN];

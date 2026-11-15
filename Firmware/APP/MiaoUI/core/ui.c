@@ -820,10 +820,15 @@ static void Draw_TextPage(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item, ui_ite
                 }
 
                 case UI_DATA_SWITCH:
-                    Disp_DrawRFrame(UI_DATA_X0, (uint16_t)(UI_FXI(temp_item->animationY) - UI_FONT_HIGHT + 3), UI_FONT_HIGHT, UI_FONT_HIGHT, 2);
+                {
+                    /* Align the entire checkbox (outline and fill) with the
+                     * numeric column's right edge, not its left edge. */
+                    const uint16_t x = UI_DATA_X1 - UI_FONT_HIGHT;
+                    Disp_DrawRFrame(x, (uint16_t)(UI_FXI(temp_item->animationY) - UI_FONT_HIGHT + 3), UI_FONT_HIGHT, UI_FONT_HIGHT, 2);
                     if (data->ptr && *(uint8_t *)data->ptr == true)
-                        Disp_DrawRBox(UI_DATA_X0 + 2, (uint16_t)(UI_FXI(temp_item->animationY) - UI_FONT_HIGHT + 5), UI_FONT_HIGHT - 4, UI_FONT_HIGHT - 4, 2);
+                        Disp_DrawRBox(x + 2, (uint16_t)(UI_FXI(temp_item->animationY) - UI_FONT_HIGHT + 5), UI_FONT_HIGHT - 4, UI_FONT_HIGHT - 4, 2);
                     break;
+                }
 
                 case UI_DATA_STRING:
                     if(data->ptr)

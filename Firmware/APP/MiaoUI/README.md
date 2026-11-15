@@ -127,3 +127,8 @@ Dashboard 页内 K1 被忽略,按 K2(短按)返回图标菜单,长按同样返�
 - Statistics 6 项均为 UI_ITEM_DATA + RO：PDO 为 INT（左标签标明 DC/NEG/SPR/PPS/EPR），Req (V)/Cur (A)/VBUS (V) 为 FIXED 2 位；GX21M15 (C)/SW3538 (C) 为 FIXED 1 位。仍是 200 ms 镜像读取，无额外 I²C 访问，NTC 随 333 ms 延时电源镜像采样，GX21M15 随 500 ms 延时温度镜像采样。
 - UI 6 ms 与按键 8 ms 独立调度，2 ms 协程派发；每次实际扫描生成一次事件，4 项队列向 UI 一次交付一项。无阻塞补帧、休眠/PD quiet 清队列，唤醒手势不进入菜单。长按 800 ms、K1 DAS 96 ms、K2 DAS 参数 128 ms（K2 UI 仍只有一次 BACK）、消抖 16 ms。实际时间受调度和绘制耗时影响。
 - 尚未上板验证快速点击、菜单滚动、显示裁剪与编译占用。
+
+### 2026-11-15：开关栏对齐和 i18n 边界
+
+- `UI_DATA_SWITCH` 的空心外框及选中填充整体以 `UI_DATA_X1 - UI_FONT_HIGHT` 为左边界，与 INT/FIXED 右栏共用右缘。128 px、12 px 字高时 x=106（原 x=86，右移20 px），外框 12×12，填充内缩2 px；不改变纵坐标、裁剪、开关行为或滚动条。
+- 未来中文化不改变 Dashboard 自绘页与图标菜单共用 `Dashboard_DrawStatusLine()` 的任何文本、数字格式、ASCII 字体和坐标；仅 `-Dashboard` 菜单入口可以翻译。具体边界见 [APP/I18N.md](../I18N.md)。

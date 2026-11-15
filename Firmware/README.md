@@ -227,6 +227,10 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 - Statistics 用 6 个只读 INT/FIXED 数值及有效标志，标签和单位在左，右侧右对齐。不使用整行运行时字符串；通用整数格式器处理 0~3 位小数、负零附近值、INT32_MIN、无效值 `--`、超宽 `OVF`。RW 弹窗共享格式器，保留原 `UI_DATA_FLOAT` 枚举别名和 STRING/SWITCH 行为；只读项 ENTER 不进入弹窗。
 - 此轮未目标构建/板测，不改变 I²C、PD、风扇和 NTC 换算实现；按键在协作式任务被阻塞期间仍可能错过完整物理脉冲。实际 Flash 和 GUI 帧率以实测为准。
 
+### 2026-11-15：Flash 实测反馈与 UI 对齐
+
+用户反馈中文化前 text=54,996 B、data=76 B（合计55,072 B），62 KiB Flash 名义剩余8,416 B；未提供新 MAP，不能精确确认其他段/对齐。UI_DATA_SWITCH 边框及填充统一右对齐数值栏，Dashboard 自绘页面及共用顶栏固定 ASCII/原字体，不纳入未来 i18n；菜单入口仍可翻译。此次仅布局与文档修改，未启用中文化；目标编译和板端验证待完成。
+
 ## 模块文档
 
 - [`APP/framework/README.md`](APP/framework/README.md) — 低功耗框架(UI_OFF 休眠)

@@ -2,6 +2,9 @@
  * initializer convention as IH01A. Planning only: not included/compiled yet.
  * Exact English keys; preserve prefix punctuation and format specifiers.
  * Do not translate internal identifiers, CLI, USB-PD protocol names or telemetry.
+ * Dashboard_Page and its shared Dashboard_DrawStatusLine remain ASCII with
+ * the original font/layout in ALL languages. Only the -Dashboard menu entry
+ * is translated; no dashboard screen content belongs in this table.
  * Runtime format templates below require translation before formatting.
  */
 /* Root/menu */
