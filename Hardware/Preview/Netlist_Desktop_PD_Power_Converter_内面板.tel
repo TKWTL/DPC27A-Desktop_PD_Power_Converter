@@ -1,7 +1,8 @@
 $PACKAGES
 0_78寸OLED ! '0.78寸OLED' ! '{Value}' ; OLED1 
-C0402 ! 100nF ! 100nF ; C1 C4 
-C0603 ! 100nF ! 100nF ; C2 C3 
+C0402 ! 1uF ! 1uF ; C4 
+C0402 ! 4.7uF ! '4.7uF' ; C1 
+C0603 ! 2.2uF ! '2.2uF' ; C2 C3 
 KEY-SMD_4P-L4_2-W3_2-P2_20-LS4_6 ! SKRPACE010 ! '{Value}' ; SW1 SW2 
 R0402 ! 10K ! 10K ; R2 
 R0402 ! 750K ! 750K ; R1 

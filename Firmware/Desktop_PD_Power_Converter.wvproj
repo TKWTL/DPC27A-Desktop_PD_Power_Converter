@@ -26,6 +26,21 @@
 				"parentLogicPath": "",
 				"type": "file",
 				"name": "*.wvproj"
+			},
+			{
+				"parentLogicPath": "",
+				"type": "file",
+				"name": "*.7z"
+			},
+			{
+				"parentLogicPath": "",
+				"type": "file",
+				"name": "*.zip"
+			},
+			{
+				"parentLogicPath": "",
+				"type": "file",
+				"name": "*.tar"
 			}
 		],
 		"projectName": "Desktop_PD_Power_Converter",
@@ -35,14 +50,15 @@
 	"buildConfig": {
 		"configurations": [
 			{
+				"parallelizationNumber": "unlimited",
 				"buildArtifact": {
 					"artifact_name": "${ProjName}",
 					"artifact_extension": "elf",
 					"output_prefix": "",
 					"artifact_type": "Executable"
 				},
-				"parallelizationNumber": "unlimited",
 				"stop_on_first_build_error": true,
+				"usingCacheAccelerate": false,
 				"pre_script": "",
 				"pre_script_description": "",
 				"post_script": "",
@@ -345,7 +361,7 @@
 		"address": "0x08000000",
 		"target_path": "Project/obj/Desktop_PD_Power_Converter.hex",
 		"clkSpeed": "High",
-		"debug_interface_mode": "",
+		"debug_interface_mode": "1-wire serial",
 		"erase": true,
 		"program": true,
 		"verify": true,
