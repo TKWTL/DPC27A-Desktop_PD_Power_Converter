@@ -45,6 +45,7 @@ extern "C" {
 #define SW3538_STRG_ADCL                0x41U
 #define SW3538_STRG_ADCH                0x42U
 #define SW3538_STRG_NTC_CURR            0x44U
+#define SW3538_NTC_CURR_40UA            0x80U /* 0: 20 uA, 1: 40 uA */
 #define SW3538_CTRG_PD_CMD              0xA7U
 
 /* Extended 0x1xx register bank.  Reg0x10=0x81 selects the bank; while selected,
@@ -278,6 +279,8 @@ struct SW3538_StatusTypedef
     uint16_t vout_mv;
     uint32_t pt1_iout_ma_x10;
     uint32_t pt2_iout_ma_x10;
+    int16_t ntc_temperature_x10; /* board NTC, tenths of a degree C */
+    uint8_t ntc_valid;
 };
 
 typedef struct
@@ -358,6 +361,8 @@ uint8_t SW3538_IsPort2DeviceOnline(const SW3538_Handle *handle);
 uint8_t SW3538_IsBuckOn(const SW3538_Handle *handle);
 uint8_t SW3538_GetPDVersion(const SW3538_Handle *handle);
 SW3538_Protocol SW3538_GetProtocol(const SW3538_Handle *handle);
+/* Read cached 100k B3950 NTC; false for offline/invalid/out of range. */
+uint8_t SW3538_ReadNTCTemperatureX10(const SW3538_Handle *handle, int16_t *temperature);
 uint16_t SW3538_ReadVINmV(const SW3538_Handle *handle);
 uint16_t SW3538_ReadVOUTmV(const SW3538_Handle *handle);
 uint32_t SW3538_ReadPort1IOUTmA_x10(const SW3538_Handle *handle);

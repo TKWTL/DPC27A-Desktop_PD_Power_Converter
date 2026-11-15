@@ -11,6 +11,7 @@
 #include "Pages/game_dinosaur.h"
 #include "framework/pm_ui_register.h"
 #include "pd.h"
+#include "app_tasks.h"
 #include "vbus_sense.h"
 #include "time_api.h"
 #include <stdio.h>
@@ -24,6 +25,7 @@ static ui_item_t s_dashboard_item;
 static ui_item_t s_statistics_item;
 static ui_item_t s_statistics_back_item;
 static ui_item_t s_stats_pdo_item, s_stats_req_item, s_stats_current_item, s_stats_vbus_item;
+static ui_item_t s_stats_gx_item, s_stats_ntc_item;
 static ui_item_t s_settings_item;
 static ui_item_t s_settings_icons_back_item;
 static ui_item_t s_settings_detail_item;
@@ -38,20 +40,44 @@ static char s_stats_pdo[20] = " PDO: --";
 static char s_stats_req[20] = " Req: --";
 static char s_stats_current[20] = " Cur: --";
 static char s_stats_vbus[20] = " VBUS: --";
+static char s_stats_gx[20];
+static char s_stats_ntc[20];
 static uint32_t s_statistics_poll_ms;
 static uint8_t s_statistics_valid;
+
+/* Fixed-point signed tenths; keep negative fractional values (e.g. -0.1C). */
+static void statistics_temperature(char *buf, const char *name, uint8_t valid, int16_t x10)
+{
+    if(!valid)
+        (void)snprintf(buf, 20u, "%s: --.-C", name);
+    else
+    {
+        unsigned mag = (unsigned)(x10 < 0 ? -(int32_t)x10 : x10);
+        (void)snprintf(buf, 20u, "%s: %s%u.%uC", name,
+                       x10 < 0 ? "-" : "", mag / 10u, mag % 10u);
+    }
+}
 
 void Statistics_Poll(void)
 {
     uint32_t now = TIME_Millis();
     uint32_t mv;
     uint32_t ma;
+    int32_t milli_c;
+    int16_t ntc_x10 = 0;
+    uint8_t ntc_valid;
+    const GX21M15_Handle *gx = APP_GetGX21M15();
 
     if(s_statistics_valid && (uint32_t)(now - s_statistics_poll_ms) < 200u)
         return;
 
     s_statistics_valid = 1u;
     s_statistics_poll_ms = now;
+    milli_c = GX21M15_ReadTemperatureMilliC(gx);
+    statistics_temperature(s_stats_gx, " GX21M15", GX21M15_IsOnline(gx),
+        (int16_t)((milli_c >= 0 ? milli_c + 50 : milli_c - 50) / 100));
+    ntc_valid = SW3538_ReadNTCTemperatureX10(APP_GetSW3538(), &ntc_x10);
+    statistics_temperature(s_stats_ntc, " SW3538", ntc_valid, ntc_x10);
     mv = VBUS_Sense_ReadMillivolts();
     (void)snprintf(s_stats_vbus, sizeof(s_stats_vbus),
                    " VBUS %lu.%02luV", (unsigned long)(mv / 1000u),
@@ -144,7 +170,7 @@ void Create_MenuTree(ui_t *ui)
             Add_Disp_Items(&s_settings_page);
             Add_Service_Items(&s_settings_page);
 
-    /* Root Statistics follows Settings; PD and VBUS are read-only rows. */
+    /* Root Statistics follows Settings; PD, VBUS and temperatures are read-only rows. */
     AddItem("-Statistics", UI_ITEM_PARENTS, img_statistics,
             &s_statistics_item, &s_main_page, &s_statistics_page, 0);
         AddPage("[Statistics]", &s_statistics_page, UI_PAGE_TEXT, &s_main_page);
@@ -158,6 +184,10 @@ void Create_MenuTree(ui_t *ui)
         AddItem(s_stats_current, UI_ITEM_WORD, 0, &s_stats_current_item,
                 &s_statistics_page, 0, statistics_readonly);
         AddItem(s_stats_vbus, UI_ITEM_WORD, 0, &s_stats_vbus_item,
+                &s_statistics_page, 0, statistics_readonly);
+        AddItem(s_stats_gx, UI_ITEM_WORD, 0, &s_stats_gx_item,
+                &s_statistics_page, 0, statistics_readonly);
+        AddItem(s_stats_ntc, UI_ITEM_WORD, 0, &s_stats_ntc_item,
                 &s_statistics_page, 0, statistics_readonly);
 
     AddItem("-Burn-in Test", UI_ITEM_WORD, img_burn_in,

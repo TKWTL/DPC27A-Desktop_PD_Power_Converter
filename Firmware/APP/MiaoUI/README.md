@@ -65,7 +65,7 @@
   先显示说明(约 3 s,任意键跳过),随后整屏涂白用于烧屏观察,任意键返回菜单;
 - 主菜单 `-Dino Game`(`Pages/game_dinosaur.c`,由 NUEDC_2025B Firmware_0 移植):
   小恐龙跑酷——K1(DOWN) 跳/失败后重开、K2(ENTER) 退出且**保留本次进度**
-  (再次进入继续,不重开);无帧分频,UI 每一拍(8 ms)渲染一帧(上限 ~125 fps,受
+  (再次进入继续,不重开);无帧分频,UI 每一拍(6 ms)渲染一帧(理论上限 ~167 fps,受
   绘制耗时与刷屏合并影响);模拟独立按 16 ms 定时推进(`DINO_SIM_TICK_MS`,不受
   绘制耗时影响):每 tick 一个原版 16 ms 步长 + 半个分数步(奇数进位)→ 世界/起跳
   下落与原版同速(1:1)、分数为原版一半 —— 画面仍每拍重绘,比原版 osDelay(16)
@@ -114,7 +114,9 @@ Dashboard 页内 K1 被忽略,按 K2(短按)返回图标菜单,长按同样返�
 - 主 Settings (`UI_PAGE_ICON`) 首位为 `[Menu]` 返回图标，使用已有 `img_home`；其后依次为 TypeA+C、TypeC1、TypeC2 与第二层 Settings。两级 Settings **复用同一个** `img_configuration` 常量，不复制位图。第二层进入原先的 `UI_PAGE_TEXT` 设置页（Sleep、Display、Fan/Reset/ISP）。
 - 三个端口设置页面的返回指向 Settings 图标页；文本设置页返回同样指向该页。图标页使用现有 BACK 操作返回上一级；根菜单 BACK→手动关屏行为不变。
 - Statistics (`UI_PAGE_TEXT`) 采用 IH01A 的 `img_statistics` 30×30 XBM 资源（GPL-3.0-or-later），并显示 PD 已选 PDO 序号及 SPR/PPS/EPR、申请电压/电流、VBUS 实测值。未连接 / 协商中显示占位符，不将未完成协商报告为有效合同。
-- 静态字符数组由 `Statistics_Poll()` 最多每 200 ms 更新，读取的是 PD 协议内存状态和 PA7 VBUS ADC 镜像，不发起 I²C 访问。标签使用较短 ASCII 文本以适配 DPC27A 的 128×80 屏及固定 6 px 字体；不移植 IH01A 的中文字体与 UI 像素布局。
+- 静态字符数组由 `Statistics_Poll()` 最多每 200 ms 更新，读取 PD 状态、PA7 VBUS ADC 与 500 ms GX21M15/SW3538 NTC 镜像，不发起 I²C 访问。标签使用较短 ASCII 文本以适配 DPC27A 的 128×80 屏及固定 6 px 字体；不移植 IH01A 的中文字体与 UI 像素布局。
 - 图标素材沿用原仓库的 GPL-3.0-or-later 声明；本次只额外引入一张 Statistics 图（120 字节原始 XBM）。实际 Flash 差额需以编译后的 `.map` 为准。
 
 尚未在目标硬件验证菜单层级、按钮返回与 PD 实时显示。
+
+2026-11-15：Statistics 在 VBUS 后追加 ` GX21M15: xx.xC` 与 ` SW3538: xx.xC` 两个只读文本行，未就绪/离线/NTC 无效显示 `--.-C`；使用原生文本页滚动。UI 执行间隔 8→6 ms，独立按键 10 ms 和游戏 16 ms 不改；老化测试说明使用 2400 ms 实际时间。暂不接入中文化，i18n 清单仅增加两个保留英文的型号键。

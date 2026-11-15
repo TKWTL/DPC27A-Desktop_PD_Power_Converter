@@ -103,7 +103,7 @@ THRD_DECLARE(thread_vbus)
     THRD_END;
 }
 
-#define UI_FRAME_PERIOD_MS         8u
+#define UI_FRAME_PERIOD_MS         6u
 #define UI_KEY_SERVICE_MS          10u
 #define PD_STARTUP_QUIET_WINDOW_MS 1000u
 
@@ -123,7 +123,7 @@ static uint32_t s_app_boot_ms;
 /* USB-PD GoodCRC reception is a sub-millisecond timing path.  During initial
  * SPR/EPR negotiation, nonessential display and telemetry traffic can create a
  * dense SPI/I2C/DMA interrupt load.  Keep the first negotiation window quiet;
- * after a valid power contract is ready, all normal UI and 333 ms telemetry
+ * after a valid power contract is ready, all normal UI and 500 ms telemetry
  * work resumes.  If a non-PD/DC source is used, the timeout prevents the UI
  * from being suppressed indefinitely. */
 static uint8_t APP_NoncriticalIOAllowed(void)
@@ -215,7 +215,7 @@ THRD_DECLARE(thread_ui)
         THRD_DELAY(UI_FRAME_PERIOD_MS);
         now_ms = TIME_Millis();
 
-        /* Key tick = a true 10 ms grid.  The UI frame is 8 ms, so a plain
+        /* Key tick = a true 10 ms grid.  The UI frame was 8 ms (now 6 ms), so a plain
          * "elapsed >= 10 ms" test only fired on every second frame (~16 ms,
          * drifting with frame load): the 1 s long press became ~1.6 s and the
          * 80 ms DAS repeat became ~128 ms, so a held DOWN key looked dead.
@@ -302,7 +302,7 @@ THRD_DECLARE(thread_i2c_watchdog)
     THRD_END;
 }
 
-#define POWER_MIRROR_POLL_MS     333u   /* SW3538 / SW3526 power telemetry */
+#define POWER_MIRROR_POLL_MS     500u   /* SW3538 / SW3526 power telemetry */
 #define TEMP_MIRROR_POLL_MS      500u   /* GX21M15U temperature mirror */
 #define POLL_PHASE_POWER_MS       50u
 #define POLL_PHASE_GX21M15_MS    300u
@@ -432,6 +432,7 @@ static void app_proto_reinit_on_edge(void)
  * I2C) are refreshed back-to-back, then the power budget is re-allocated. */
 THRD_DECLARE(thread_power_mirror)
 {
+    static uint32_t cycle_start_ms;
     static uint8_t share[PWR_ALLOC_CHIPS];
     static uint8_t meas_w[PWR_ALLOC_CHIPS];  /* measured output power: 3538 / C1 / C2 */
     static uint8_t w0;
@@ -445,6 +446,7 @@ THRD_DECLARE(thread_power_mirror)
     THRD_DELAY(POLL_PHASE_POWER_MS);
     while(1)
     {
+        cycle_start_ms = TIME_Millis();
         if(APP_NoncriticalIOAllowed())
         {
             THRD_SPAWN_ARGS(SW3538_StatusLoad, &s_sw3538);
@@ -577,20 +579,23 @@ THRD_DECLARE(thread_power_mirror)
 #endif
             }
         }
-        THRD_DELAY(POWER_MIRROR_POLL_MS);
+        /* Async I/O counts toward the period; no queued catch-up cycles. */
+        THRD_UNTIL((uint32_t)(TIME_Millis() - cycle_start_ms) >= POWER_MIRROR_POLL_MS);
     }
     THRD_END;
 }
 
 THRD_DECLARE(thread_gx21m15)
 {
+    static uint32_t cycle_start_ms;
     THRD_BEGIN;
     THRD_DELAY(POLL_PHASE_GX21M15_MS);
     while(1)
     {
+        cycle_start_ms = TIME_Millis();
         if(APP_NoncriticalIOAllowed())
             THRD_SPAWN_ARGS(GX21M15_TemperatureLoad, &s_gx21m15);
-        THRD_DELAY(TEMP_MIRROR_POLL_MS);
+        THRD_UNTIL((uint32_t)(TIME_Millis() - cycle_start_ms) >= TEMP_MIRROR_POLL_MS);
     }
     THRD_END;
 }
@@ -678,7 +683,7 @@ THRD_DECLARE(thread_fan)
  * A steady >5 W output blocks automatic sleep but must not wake UI_OFF. */
 #define PM_ACTIVITY_WAKE_DELTA_MW 2000u
 
-/* Total output power from the 333 ms power mirrors (same integer math as the
+/* Total output power from the 500 ms power mirrors (same integer math as the
  * dashboard: SW3538 column = shared VOUT x both port currents). */
 static uint32_t app_output_power_mw(void)
 {

@@ -38,10 +38,10 @@ Project/obj/         构建产物(除 `.gitkeep` 外被忽略)
 |---|---|---|
 | `thread_pd` | 每轮 | USB-PD 协议/策略推进 |
 | `thread_vbus` | 20 ms | PA7 采样输入母线电压并喂给 PD 策略 |
-| `thread_ui` | 10 ms | 启动即点亮屏幕并进入 Dashboard 仪表盘(与 PD 状态无关);按键扫描 + MiaoUI 主循环 |
+| `thread_ui` | 6 ms | 启动即点亮屏幕并进入 Dashboard 仪表盘(与 PD 状态无关);按键扫描 + MiaoUI 主循环 |
 | `thread_soft_i2c_service` | 每轮 | 两路软件 I2C 各推进一步 |
 | `thread_i2c_watchdog` | 10 ms | I2C 事务超时检测与总线恢复 |
-| `thread_power_mirror` | 333 ms | SW3538 + 两个 SW3526 的状态/ADC 镜像刷新,并把总功率限制分配给各芯片功率上限 |
+| `thread_power_mirror` | 500 ms | SW3538 + 两个 SW3526 的状态/ADC 镜像刷新,并把总功率限制分配给各芯片功率上限 |
 | `thread_gx21m15` | 500 ms | GX21M15U 温度镜像刷新 |
 | `thread_fan` | 500 ms | 自动风扇调速:UVP 停转 / 传感器失效全速 / 40(37)°C 迟滞 + 每 °C +2 |
 | `thread_pm` | 50 ms | 低功耗状态机:`APP/framework`,空闲 1 min → UI_OFF 关屏;按键/插拔/>5 W 唤醒 |
@@ -109,7 +109,7 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
   Dashboard / Settings / Statistics / Burn-in Test / Dino Game / About；
   Settings 图标子菜单首项是 `img_home` 返回上级，后面依次为 TypeA+C、TypeC1、TypeC2
   (`APP/Pages/port_pages.c`)与第二层 Settings（进入原文字设置页），两层 Settings 共用
-  `img_configuration`；Statistics 提供 PD 申请档位、请求电压/电流、VBUS 实测值。
+  `img_configuration`；Statistics 提供 PD 申请档位、请求电压/电流、VBUS 实测值，以及 GX21M15U 和 SW3538 NTC 温度。
   仪表盘与其它全屏页一样都只是被菜单调用的绘制函数;仪表盘上导航键
   被忽略,按 K2(ENTER,松开触发)返回图标菜单,长按 K2=BACK 同样返回。
   K1=DOWN,K2=ENTER(长按=BACK:子页回上级、根菜单立即休眠),两路 GPIO 使用内部
@@ -138,7 +138,7 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 - PD 状态栏:输入 < 8 V 显示 `UVP`;否则 `EPR/SPR/NEG/DC`(PD 未连接 = `DC`)。
 - 第一行大约 21 字符:温度丢 `'`、电压取整就是为了在 `UVP`/`EPR`(3 字符)时
   也不溢出(22 字符会被屏幕右边缘截掉最后一字)。
-- 数据全部取自器件镜像(功率 333 ms,温度 500 ms),UI 不做 I2C 访问:
+- 数据全部取自器件镜像(功率 500 ms,温度 500 ms),UI 不做 I2C 访问:
   SW3538 列 = 共享 VOUT + A/C 两路电流之和 + 芯片协议;
   两个 SW3526 列 = 各自的 VOUT/IOUT/协议。芯片离线时该列显示 `---`;
   协议行:未接设备 `NC`、接了但无快充 `5V`,其余显示协议名,文本在列内居中
@@ -184,7 +184,7 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 |---|---|---|
 | `DPC_DIAGNOSTICS_ENABLE` | **0** | 额外的每秒 VBUS/PM、OLED 就绪、端口协议配置 `[CFG]`、PD 报文/PDO/PHY 详细诊断 |
 | `DPC_LOG_STARTUP_ENABLE` | **1** | 启动标题、`[RESET]` 复位原因、主频/ChipID、UART/SPI/风扇 PWM/I²C/Soft-I²C 信息及 PD 输入策略参数 |
-| `DPC_LOG_POWER_ALLOC_ENABLE` | **1** | `[PWR]` 功率分配变更：仅当对至少一颗在线芯片实际下发新的功率限制后打印一次；不按 333 ms 周期重复打印未变化的结果 |
+| `DPC_LOG_POWER_ALLOC_ENABLE` | **1** | `[PWR]` 功率分配变更：仅当对至少一颗在线芯片实际下发新的功率限制后打印一次；不按 500 ms 周期重复打印未变化的结果 |
 | `DPC_LOG_FAN_CHANGE_ENABLE` | **1** | `[FAN]` 风扇 PWM 档位变更：只有初始应用或 PWM 值变化时打印温度、在线状态、UVP 和新档位；不按 500 ms 周期重复打印相同档位 |
 
 例如默认构建会输出 `[RESET]`、`[PWR]` 和 `[FAN]`，但不会输出周期性 `[VBUS]` / `[PM]`；设置 `DPC_DIAGNOSTICS_ENABLE=1` 只会额外打开详细诊断，**不会改变上述三个独立宏的取值**。关闭启动、功率或风扇日志时只需单独把对应宏设为 `0`。
@@ -197,6 +197,13 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 
 本轮退役临时诊断：删除三个实验宏、I²C 首故障锁存、扩展快照及 `[I2C]`/`[I2C0]` 打印。常用启动/功率/风扇日志与原详细日志主开关保留。看门狗、STOP 握手、错误处理、PFIC 中断保护、DMA 与内存屏障保持实测基线的精简路径；保留必要的 MMIO 读取。旧实验宏不再有效。清理后的源码仍需 Clean Build 与板端复测。
 
+### I²C 修复笔记（2026-11-15）
+
+- 现象：关闭详细诊断和首故障锁存时 SW3538 与 GX21M15U 频繁离线，开启后变稳。两份 ELF/MAP 确认实际参与 -Os/-flto；全局去 LTO 链接曾溢出 668 B，不能将 LTO 直接认定为根因。
+- 失败 ELF 硬件断点 0x5982 捕获看门狗时间差 131 ms（4933→5064），状态 WAIT_ADDR_TX、owner=SW3538、地址 0x3C、TX=40 05，CTLR1=0401、CTLR2=0330、STAR1=STAR2=0，DMA6/7 尚未进入本次传输。该次为真实状态停滞而非时间差下溢，软件 active 与硬件空闲失步；调试器读取状态寄存器可能有副作用。
+- 修订 `9611c8c`：一次正常事务只请求一次 STOP，避免对自清 START/STOP 位读改写；确认 STOP/START/BUSY/MSL 均清零再发布成功，保持 tBUF=2 us；DMA 接管前关 EV、先配置通道再释放 ADDR，检查异常/丢失主机身份；前台看门狗用 I²C 专属 IRQ 保护、重新采样时间与状态，使用有符号模差并添加内存屏障。保留 400 kHz、USBPD 高优先级、DMA 通道与恢复机制。
+- 用户反馈：全部诊断关闭后两设备均正常，随后 `3c90fbb` 清理临时诊断。实测支持组合修复有效，未证明 STOP 为唯一根因；不再依赖诊断代码改变时序。详细历史见 [I²C 驱动笔记](Peripheral/I2C/README.md)。
+
 ### 历史 Flash 容量基线
 
 关闭诊断锁存的历史 MAP（`Desktop_PD_Power_Converter(1).map`，对应无编号 ELF，修复前，-Os/-flto=auto）显示：Flash 62 KiB，.text 58,424 B（机器指令约 47,170 B、只读资源 11,249 B、对齐 5 B），.init/.vector 256 B、.data 156 B，合计 58,836 B，剩余 4,652 B；.bss 11,340 B、.noinit 4 B、栈 2,048 B，计入对齐后 RAM 13,552 B。LTO 合并字符串池 6,448 B，其中明显带 [PD] 前缀的字符串至少 2,668 B；字体 font_menu_main_h12w6 1,200 B，10 个菜单图标 1,200 B，恐龙游戏独立图像资源 928 B。以上不是新固件的测量；未通过本轮源码清理承诺节省量。
@@ -204,7 +211,13 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 ### Flash 优化与中文化预备
 
 - PD 详细日志改为主诊断宏控制，默认保留简短事件，协议状态机及 PHY 不改。源码直接 printf 格式串（去重含 NUL，未计共享/合并）由 3235 B 降至 529 B（保守统计跨条件编译的分支，非实际链接结果）。最终以同配置 Clean Build 的 MAP 为准。
-- [APP/I18N.md](APP/I18N.md)：英文原文为键的翻译清单与字库估算，当前 73 项、94 个去重汉字，尚未接入运行时。
+- [APP/I18N.md](APP/I18N.md)：英文原文为键的翻译清单与字库估算，当前 75 项、94 个去重汉字，尚未接入运行时。
+
+### 2026-11-15：遥测与 UI 刷新、双温度
+
+- 电源镜像从原每轮 I/O 后延时 333 ms 改为 500 ms 起始目标周期（I/O耗时计入；过载/PD quiet 时不保证每 500 ms 都能拿到新样本），GX21M15U 同样按起始周期 500 ms；功率分配与协议配置沿用此任务。UI 帧延时 8→6 ms，键盘保持独立 10 ms 时基，游戏 16 ms 模拟周期不变，老化测试说明改为真实时间 2400 ms。
+- SW3538 ADCLoad 新增 NTC 通道与前后电流档位校验，26 项整数表 52 B；Statistics 每 200 ms 只读镜像，追加 GX21M15、SW3538 两行（超出屏幕可滚动），不新增 UI I²C 事务；风扇反馈仍只使用 GX21M15U。详见 [SW3538 驱动](BSP/SW3538/README.md)。
+- 新功能仅源码及曲线数值验证，尚未目标编译和板端复测。
 
 ## 模块文档
 

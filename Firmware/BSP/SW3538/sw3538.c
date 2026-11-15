@@ -41,6 +41,50 @@ static uint16_t decode_adc12(const uint8_t *bytes)
     return (uint16_t)((uint16_t)bytes[0] | (((uint16_t)bytes[1] & 0x0Fu) << 8));
 }
 
+/* R/10 ohm at 0, 5, ... 125 C, R25=100k, B=3950 K.
+ * Model generated offline; no logarithm, floating point or 64-bit division. */
+static const uint16_t s_ntc_r10[] = {
+    33621u, 25925u, 20175u, 15837u, 12535u, 10000u,
+    8037u, 6506u, 5301u, 4348u, 3588u, 2978u,
+    2486u, 2086u, 1760u, 1492u, 1270u, 1087u,
+    934u, 805u, 698u, 606u, 529u, 463u,
+    407u, 359u,
+};
+
+static uint8_t ntc_temperature_x10(uint16_t raw, uint8_t current, int16_t *temperature)
+{
+    uint16_t r10;
+    uint8_t i;
+    uint16_t hi, lo, step;
+
+    /* ADC rails and out-of-model values are not valid temperatures. */
+    if(raw == 0u || raw >= 4095u)
+        return 0u;
+    r10 = (uint16_t)(raw * ((current & SW3538_NTC_CURR_40UA) ? 3u : 6u));
+    if(r10 > s_ntc_r10[0] + 3u ||
+       r10 + 3u < s_ntc_r10[sizeof(s_ntc_r10) / sizeof(s_ntc_r10[0]) - 1u])
+        return 0u;
+    if(r10 >= s_ntc_r10[0])
+    {
+        *temperature = 0;
+        return 1u;
+    }
+    for(i = 1u; i < sizeof(s_ntc_r10) / sizeof(s_ntc_r10[0]); ++i)
+    {
+        hi = s_ntc_r10[i - 1u];
+        lo = s_ntc_r10[i];
+        if(r10 >= lo)
+        {
+            step = hi - lo;
+            *temperature = (int16_t)((i - 1u) * 50u +
+                ((uint32_t)(hi - r10) * 50u + step / 2u) / step);
+            return 1u;
+        }
+    }
+    *temperature = 1250;
+    return 1u;
+}
+
 static uint16_t decode_ilim_ma(uint8_t raw)
 {
     if(raw & 0x80u)
@@ -215,6 +259,8 @@ SW3538_RET SW3538_ByteWrite(SW3538_ARGS(uint8_t reg, uint8_t data))
     result = I2C_API_TakeResult(handle->i2c_owner);
     handle->last_io = map_result(result);
     handle->status.online = (result == I2C_API_RESULT_OK) ? 1u : 0u;
+    if(!handle->status.online)
+        handle->status.ntc_valid = 0u;
 
     SW3538_FUNC_END;
 }
@@ -234,6 +280,8 @@ SW3538_RET SW3538_ByteRead(SW3538_ARGS(uint8_t reg, uint8_t *data))
     result = I2C_API_TakeResult(handle->i2c_owner);
     handle->last_io = map_result(result);
     handle->status.online = (result == I2C_API_RESULT_OK) ? 1u : 0u;
+    if(!handle->status.online)
+        handle->status.ntc_valid = 0u;
 
     SW3538_FUNC_END;
 }
@@ -253,6 +301,8 @@ SW3538_RET SW3538_BytesRead(SW3538_ARGS(uint8_t reg, uint8_t *data, uint16_t len
     result = I2C_API_TakeResult(handle->i2c_owner);
     handle->last_io = map_result(result);
     handle->status.online = (result == I2C_API_RESULT_OK) ? 1u : 0u;
+    if(!handle->status.online)
+        handle->status.ntc_valid = 0u;
 
     SW3538_FUNC_END;
 }
@@ -723,11 +773,12 @@ SW3538_RET SW3538_ADCLoad(SW3538_NOARG)
     SW3538_SPAWN_IO(SW3538_ByteWrite(&handle->io_pt, handle, SW3538_CTRG_FORCE_WREN, SW3538_FORCE_WREN_STEP2));
     SW3538_SPAWN_IO(SW3538_ByteWrite(&handle->io_pt, handle, SW3538_CTRG_FORCE_WREN, SW3538_FORCE_WREN_STEP3));
 
-    /* VIN ADC is documented as disabled by default; force all four channels
-     * used by this driver on, while preserving unrelated force bits. */
+    /* VIN ADC is documented as disabled by default; force all four
+     * power channels and the NTC ADC on, preserving unrelated force bits. */
     SW3538_SPAWN_IO(SW3538_ByteRead(&handle->io_pt, handle, SW3538_CTRG_FORCE2, &handle->rxbuf[0]));
     handle->rxbuf[0] |= (SW3538_CTRG_FORCE2_ADC_VOUT | SW3538_CTRG_FORCE2_ADC_VIN |
-                         SW3538_CTRG_FORCE2_ADC_PT1_I | SW3538_CTRG_FORCE2_ADC_PT2_I);
+                         SW3538_CTRG_FORCE2_ADC_PT1_I | SW3538_CTRG_FORCE2_ADC_PT2_I |
+                         SW3538_CTRG_FORCE2_ADC_NTC);
     SW3538_SPAWN_IO(SW3538_ByteWrite(&handle->io_pt, handle, SW3538_CTRG_FORCE2, handle->rxbuf[0]));
 
     SW3538_SPAWN_IO(SW3538_ByteWrite(&handle->io_pt, handle, SW3538_CTRG_ADC_SET, SW3538_ADC_SET_VIN));
@@ -749,6 +800,17 @@ SW3538_RET SW3538_ADCLoad(SW3538_NOARG)
     SW3538_SPAWN_IO(SW3538_BytesRead(&handle->io_pt, handle, SW3538_STRG_ADCL, handle->rxbuf, 2u));
     handle->status.pt2_iout_raw = decode_adc12(handle->rxbuf);
     handle->status.pt2_iout_ma_x10 = (uint32_t)handle->status.pt2_iout_raw * 25u;
+
+    /* Bracket the ADC latch with current reads; a range change invalidates
+     * only the NTC sample. rxbuf[2:3] survive coroutine yields; ADC uses [0:1]. */
+    SW3538_SPAWN_IO(SW3538_ByteRead(&handle->io_pt, handle, SW3538_STRG_NTC_CURR, &handle->rxbuf[2]));
+    SW3538_SPAWN_IO(SW3538_ByteWrite(&handle->io_pt, handle, SW3538_CTRG_ADC_SET, SW3538_ADC_SET_VNTC));
+    SW3538_SPAWN_IO(SW3538_BytesRead(&handle->io_pt, handle, SW3538_STRG_ADCL, handle->rxbuf, 2u));
+    SW3538_SPAWN_IO(SW3538_ByteRead(&handle->io_pt, handle, SW3538_STRG_NTC_CURR, &handle->rxbuf[3]));
+    handle->status.ntc_valid = 0u;
+    if(((handle->rxbuf[2] ^ handle->rxbuf[3]) & SW3538_NTC_CURR_40UA) == 0u)
+        handle->status.ntc_valid = ntc_temperature_x10(decode_adc12(handle->rxbuf),
+            handle->rxbuf[3], &handle->status.ntc_temperature_x10);
 
     SW3538_FUNC_END;
 }
@@ -877,6 +939,14 @@ SW3538_Protocol SW3538_GetProtocol(const SW3538_Handle *handle)
     if(handle == 0)
         return SW3538_PROTOCOL_NONE;
     return (SW3538_Protocol)(handle->status.protocol & SW3538_STRG_PROTOCOL_TYPE_MSK);
+}
+
+uint8_t SW3538_ReadNTCTemperatureX10(const SW3538_Handle *handle, int16_t *temperature)
+{
+    if(handle == 0 || temperature == 0 || !handle->status.online || !handle->status.ntc_valid)
+        return 0u;
+    *temperature = handle->status.ntc_temperature_x10;
+    return 1u;
 }
 
 uint16_t SW3538_ReadVINmV(const SW3538_Handle *handle)

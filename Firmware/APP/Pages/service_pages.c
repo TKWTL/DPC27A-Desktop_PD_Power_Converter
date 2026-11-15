@@ -10,7 +10,7 @@
  *                   during the white phase leaves.
  *
  * Input map is the product's two-key adapter (K1 = DOWN, K2 = ENTER).  Page
- * functions are pass-based: ui_loop() calls them every ~8 ms, actions arrive
+ * functions are pass-based: ui_loop() calls them every ~6 ms, actions arrive
  * in ui->action, and the page either swallows an action (ui->action =
  * UI_ACTION_NONE) or leaves it set so ui.c returns to the menu - the same
  * convention Dashboard_Page() uses.
@@ -18,14 +18,14 @@
 #include "service_pages.h"
 
 #include "board.h"
+#include "time_api.h"
 #include "debug.h"
 #include "Services/fan_control.h"
 #include "core/ui.h"
 #include "display/dispDriver.h"
 
-/* Intro dwell before the white screen; the UI task ticks every 8 ms (the 300
- * ticks below are therefore about 2.4 s). */
-#define BURNIN_INTRO_TICKS   300u
+/* Preserve the original nominal 2.4 s dwell independently of UI cadence. */
+#define BURNIN_INTRO_MS      2400u
 
 #define BURNIN_LINE_X        4u
 #define BURNIN_LINE1_Y       12u
@@ -135,7 +135,8 @@ static void burnin_paint_white(void)
 void Burnin_Page(ui_t *ui)
 {
     static uint8_t  s_phase;   /* 0 = explanation, 1 = white screen */
-    static uint16_t s_ticks;
+    static uint8_t  s_intro_started;
+    static uint32_t s_intro_ms;
 
     switch(s_phase)
     {
@@ -151,11 +152,14 @@ void Burnin_Page(ui_t *ui)
                 break;
             }
 
-            if(s_ticks == 0u)
+            if(!s_intro_started)
+            {
                 burnin_paint_intro(ui);
+                s_intro_ms = TIME_Millis();
+                s_intro_started = 1u;
+            }
 
-            s_ticks++;
-            if(s_ticks >= BURNIN_INTRO_TICKS)
+            if((uint32_t)(TIME_Millis() - s_intro_ms) >= BURNIN_INTRO_MS)
             {
                 burnin_paint_white();
                 s_phase = 1u;
@@ -169,13 +173,13 @@ void Burnin_Page(ui_t *ui)
                  * returning; ui.c switches back to the menu because the
                  * action is left set (same exit convention as the dashboard). */
                 s_phase = 0u;
-                s_ticks = 0u;
+                s_intro_started = 0u;
             }
             break;
 
         default:
             s_phase = 0u;
-            s_ticks = 0u;
+            s_intro_started = 0u;
             break;
     }
 }
