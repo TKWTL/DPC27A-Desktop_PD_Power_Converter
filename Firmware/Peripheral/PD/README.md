@@ -82,6 +82,10 @@
 > B24 No USB Suspend、电压 B20:9 = 1050 × 20 mV、电流 B6:0 = 127 × 50 mA。
 > 判读 PPS 抓包时请以 raw RDO 为准。
 
+## 日志体积优化（2026-11-15）
+
+`APP/main.h` 的 `DPC_DIAGNOSTICS_ENABLE=0` 默认仅保留精简事件（连接/断开、合同、TX/超时、重置/回退等）。`=1` 恢复逐 PDO 枚举、发送失败 PHY/报文、请求阶段与协商细节。原因字符串采用紧凑标识，合同日志统一为 `[PD] SPR/EPR/PPS PDO<n> <mV>mV <mA>mA`。EPR 失败原因短名 cable/VCONN/RDO bit/source busy/source PDO 对应原 data 1/2/3/4/5。诊断参数仅观察状态，不得包含协议动作；不改变 PHY、计时阈值、状态转移、PDO 选择/RDO 编码、Hard Reset 策略。原详细报告可由历史提交追溯。本轮未使用 WCH 工具链构建或上板，实际体积及串口解码工具兼容性需复核。
+
 ## 相关文档
 
 - `Docs/FIRMWARE_ARCHITECTURE.md`:PD 在整体调度中的位置;

@@ -9,8 +9,8 @@ extern "C" {
 
 /* Compile-time logging policy. The three operational logs below remain
  * enabled even in the lean (DPC_DIAGNOSTICS_ENABLE=0) configuration.
- * The detailed option only owns optional VBUS/PM, OLED-ready and CFG debug
- * messages. Temporary I2C fault reporting was retired. All changes require
+ * The detailed option owns optional VBUS/PM, OLED-ready, CFG and PD trace
+ * messages (PDO dumps, PHY and negotiation detail). Concise PD events remain. Temporary I2C fault reporting was retired. All changes require
  * a Clean Build. */
 #define DPC_DIAGNOSTICS_ENABLE       0  /* Detailed diagnostics (default off) */
 #define DPC_LOG_STARTUP_ENABLE       1  /* Startup identity, reset, buses, PD */
