@@ -7,7 +7,7 @@
  *    (DINO_SIM_TICK_MS), decoupled from the drawing cost - the original
  *    blocked its task with osDelay(16) inside a while(1) loop;
  *  - no floats: the original float score/height/speed became fixed point
- *    (score/world: 8 units per pixel, height: 4 units per pixel);
+ *    (score/world: 8 units per pixel, height: 6 units per pixel);
  *  - random: this project's own rand()/srand() (Project/Debug/debug.c,
  *    xorshift32) instead of the RTC-seeded libc pair - it is seeded from
  *    TIME_Millis() on every game start, because the board has no RTC;
@@ -22,15 +22,16 @@
  *    like in the original - u8g2's XBMP path clips the off-screen part, so
  *    they scroll out gradually instead of vanishing at the left edge;
  *  - speed: world (ground, clouds and cacti) at 3/4 of the former rate,
- *    jump arc sampled twice as finely over twice the time, leg animation
- *    frame duration doubled. Score rate and spawn countdowns unchanged.
+ *    jump arc interpolated over 1.5 times the original time (576 ms),
+ *    leg animation duration doubled. Score and spawn countdowns unchanged.
  *
  * Fixed point: score/world use 8 units per pixel, carrying the quarter-unit
- * world speed remainder; jump height uses 4 units per pixel. */
+ * world speed remainder; jump height uses 6 units per pixel. */
 #include "game_dinosaur.h"
 
 #include "time_api.h"
 #include "display/dispDriver.h"
+#include "i18n.h"
 
 #include <stdlib.h>   /* rand()/srand() - provided by Project/Debug/debug.c */
 #include <stdio.h>    /* snprintf - the project's integer-only printf */
@@ -55,9 +56,9 @@
 /* Keep simulation, spawns and score on the original independent clock. */
 #define DINO_SIM_TICK_MS    16u
 #define DINO_SIM_MAX_TICKS  3u      /* catch-up cap per call (48 ms) */
-#define DINO_GROUND_Y4      ((int16_t)(DINO_DEFAULT_HEIGHT * 4))
-#define DINO_JUMP_SPEED2    (-12)   /* original takeoff speed, px * 2 */
-#define DINO_JUMP_GRAVITY2  1       /* add once per 32 ms jump step */
+#define DINO_GROUND_Y6      ((int16_t)(DINO_DEFAULT_HEIGHT * 6))
+#define DINO_JUMP_SPEED2    (-12)   /* original immediate takeoff, px * 2 */
+#define DINO_JUMP_GRAVITY2  1       /* add once per original arc step */
 #define DINO_RUN_FRAME_PX   9u      /* 6 * 2 * 3/4: twice previous frame time */
 
 #define CACTUS_RESPAWN_MAX  256u
@@ -198,8 +199,8 @@ static uint32_t s_dist_x8;       /* world pixels * 8 */
 static uint8_t s_world_rem;      /* quarter of a world fixed-point unit */
 static uint8_t s_life;
 static dino_state_t s_state;
-static int16_t s_height4;        /* dino top, pixels * 4 */
-static uint8_t s_jump_half;      /* 0/1: two interpolated ticks per old step */
+static int16_t s_height6;        /* dino top, pixels * 6 */
+static uint8_t s_jump_phase;      /* 0..2, two time units per 16 ms tick */
 static int16_t s_speed2;         /* vertical speed, pixels * 2 per frame */
 static uint8_t s_last_coll;
 static uint16_t s_high_score;    /* displayed units (score_px / 2) */
@@ -234,8 +235,8 @@ static void dino_start_game(void)
     s_world_rem = 0u;
     s_life = 3u;
     s_state = DINO_PLAYING;
-    s_height4 = DINO_GROUND_Y4;
-    s_jump_half = 0u;
+    s_height6 = DINO_GROUND_Y6;
+    s_jump_phase = 0u;
     s_speed2 = 0;
     s_last_coll = 0u;
     s_score_rem = 0u;
@@ -454,9 +455,16 @@ static uint8_t dino_cactus_collision(int16_t dino_top_px, uint32_t dist_px)
 }
 
 /* ---- page ----------------------------------------------------------------- */
+static void dino_center_label(uint16_t y, const char *english)
+{
+    const char *label = DPC_I18n_Text(english);
+    uint16_t w = DPC_I18n_TextWidth(label);
+    DPC_I18n_DrawText(w < UI_HOR_RES ? (UI_HOR_RES - w) / 2u : 0u, y, label);
+}
+
 void Game_DinoSaur(ui_t *ui)
 {
-    char buf[20];
+    char buf[32];
     uint8_t bg;
     uint8_t fg;
     uint32_t score_px;
@@ -487,12 +495,13 @@ void Game_DinoSaur(ui_t *ui)
         {
             if(s_state == DINO_FAILED)
                 dino_start_game();
-            else if(s_height4 >= DINO_GROUND_Y4)
+            else if(s_height6 >= DINO_GROUND_Y6)
             {
-                s_speed2 = DINO_JUMP_SPEED2;
-                s_jump_half = 0u;
-                /* Preserve the old immediate takeoff displacement (-6 px). */
-                s_height4 = (int16_t)(s_height4 + 2 * DINO_JUMP_SPEED2);
+                /* Preserve the immediate -6px displacement; the first
+                 * post-launch old-step velocity already includes gravity. */
+                s_speed2 = DINO_JUMP_SPEED2 + DINO_JUMP_GRAVITY2;
+                s_jump_phase = 0u;
+                s_height6 = (int16_t)(s_height6 + 3 * DINO_JUMP_SPEED2);
             }
         }
     }
@@ -560,22 +569,37 @@ void Game_DinoSaur(ui_t *ui)
         dino_cloud_process(dist_px);
         dino_cactus_process(dist_px, score_px);
 
-        /* One original jump step spans two ticks. Quarter-pixel height
-         * interpolates its midpoint without float, keeping the peak height. */
-        if(s_height4 < DINO_GROUND_Y4)
+        /* Original arc segment = 3 time units; each 16 ms tick = 2.
+         * Integrate its piecewise-linear velocity across a segment boundary
+         * using sixth-pixel height. 24 old segments -> 36 ticks = 576 ms.
+         * Neither peak height nor the world/score clock changes. */
+        if(s_height6 < DINO_GROUND_Y6)
         {
-            if(s_jump_half == 0u)
-                s_speed2 = (int16_t)(s_speed2 + DINO_JUMP_GRAVITY2);
-            s_height4 = (int16_t)(s_height4 + s_speed2);
-            s_jump_half ^= 1u;
-            if(s_height4 >= DINO_GROUND_Y4)
+            if(s_jump_phase == 2u)
             {
-                s_height4 = DINO_GROUND_Y4;
-                s_jump_half = 0u;
+                s_height6 = (int16_t)(s_height6 + s_speed2);
+                s_speed2 += DINO_JUMP_GRAVITY2;
+                s_height6 = (int16_t)(s_height6 + s_speed2);
+                s_jump_phase = 1u;
+            }
+            else
+            {
+                s_height6 = (int16_t)(s_height6 + 2 * s_speed2);
+                s_jump_phase += 2u;
+                if(s_jump_phase == 3u)
+                {
+                    s_jump_phase = 0u;
+                    s_speed2 += DINO_JUMP_GRAVITY2;
+                }
+            }
+            if(s_height6 >= DINO_GROUND_Y6)
+            {
+                s_height6 = DINO_GROUND_Y6;
+                s_jump_phase = 0u;
             }
         }
 
-        coll = dino_cactus_collision((int16_t)(s_height4 >> 2), dist_px);
+        coll = dino_cactus_collision((int16_t)(s_height6 / 6), dist_px);
         if((coll != 0u) && (s_last_coll == 0u))   /* edge triggered, as the original */
         {
             s_life--;
@@ -588,7 +612,7 @@ void Game_DinoSaur(ui_t *ui)
         s_last_coll = coll;
     }
 
-    dino_top = (int16_t)(s_height4 >> 2);
+    dino_top = (int16_t)(s_height6 / 6);
 
     /* ---- rendering (later draws cover earlier ones) ---- */
     bg = ui->bgColor;
@@ -605,16 +629,33 @@ void Game_DinoSaur(ui_t *ui)
     dino_cloud_draw(dist_px);
     dino_cactus_draw(dist_px);
 
-    /* lives and score (top of the screen) */
+    /* Life icons and numeric scores preserve their ASCII content. The zh
+     * score label needs a slightly lower baseline and measured alignment. */
+    uint16_t score_y = DPC_I18n_IsChinese() ? 11u : 9u;
     if(s_life >= 3u)
-        Disp_DrawStr(1u, 9u, "***");
+        Disp_DrawStr(1u, score_y, "***");
     else if(s_life == 2u)
-        Disp_DrawStr(1u, 9u, "**");
+        Disp_DrawStr(1u, score_y, "**");
     else if(s_life == 1u)
-        Disp_DrawStr(1u, 9u, "*");
+        Disp_DrawStr(1u, score_y, "*");
 
-    snprintf(buf, sizeof buf, "HI %05d %05d", (int)s_high_score, (int)(score_px >> 1));
-    Disp_DrawStr(44u, 9u, buf);
+    snprintf(buf, sizeof buf, DPC_I18n_Text("HI %05d %05d"),
+             (int)s_high_score, (int)(score_px >> 1));
+    if(DPC_I18n_IsChinese())
+    {
+        uint16_t w = DPC_I18n_TextWidth(buf);
+        if(w <= UI_HOR_RES - 22u)
+            DPC_I18n_DrawText(UI_HOR_RES - 2u - w, score_y, buf);
+        else
+        {
+            /* Prefer readable counters to overlap with the life icons. */
+            snprintf(buf, sizeof buf, "HI %05d %05d", (int)s_high_score, (int)(score_px >> 1));
+            Disp_SetFont(UI_FONT);
+            Disp_DrawStr(44u, score_y, buf);
+        }
+    }
+    else
+        Disp_DrawStr(44u, score_y, buf);
 
     dino_frame = (uint8_t)((dist_px / DINO_RUN_FRAME_PX) % 2u);
     if(coll != 0u)
@@ -628,10 +669,21 @@ void Game_DinoSaur(ui_t *ui)
 
     if(s_state == DINO_FAILED)
     {
-        Disp_DrawStr(34u, 21u, "Game Over!!");
-        Disp_DrawStr(22u, 31u, "Dino Game V0.1");
-        Disp_DrawStr(34u, 41u, "from hjl240");
-        Disp_DrawStr(34u, 52u, "Jump to Restart");
+        if(DPC_I18n_IsChinese())
+        {
+            dino_center_label(24u, "Game Over!!");
+            dino_center_label(37u, "Dino Game V0.1");
+            dino_center_label(50u, "from hjl240");
+            dino_center_label(63u, "Jump to Restart");
+        }
+        else
+        {
+            Disp_SetFont(UI_FONT);
+            Disp_DrawStr(34u, 21u, "Game Over!!");
+            Disp_DrawStr(22u, 31u, "Dino Game V0.1");
+            Disp_DrawStr(34u, 41u, "from hjl240");
+            Disp_DrawStr(34u, 52u, "Jump to Restart");
+        }
     }
 
     Disp_SendBuffer();

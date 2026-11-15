@@ -24,3 +24,7 @@
 ## 许可
 
 两条款 BSD;详见本目录 `LICENSE`。
+
+## 2026-11-15：Unicode 扩展
+
+`u8g2.h` 的 `U8G2_WITH_UNICODE` 开启，所有文件需一致 Clean Build。原ASCII字体仍可通过 `u8g2_DrawStr`使用；中文文本经显式UTF-8接口调用，使用专用RLE子集。未引入全量字库/全量驱动。参见 [APP/I18N.md](../../APP/I18N.md)。

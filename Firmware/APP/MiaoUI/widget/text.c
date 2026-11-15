@@ -29,54 +29,115 @@
 #include "display/dispDriver.h"
 #include "string.h"
 
+#include "i18n.h"
+
+/* Keep wholly ASCII paragraphs (URLs/licenses in particular) in the
+ * original 6px font, so the existing six-line About text still fits.
+ * A paragraph containing Han uses the locale font for all its wrapped lines. */
+static uint8_t text_paragraph_is_utf8(const char *p)
+{
+    if(!DPC_I18n_IsChinese())
+        return 0u;
+    while(*p && *p != '\n')
+    {
+        if((unsigned char)*p++ >= 0x80u)
+            return 1u;
+    }
+    return 0u;
+}
+
+static uint16_t text_line_width(const char *line, uint8_t utf8)
+{
+    if(utf8)
+        return DPC_I18n_TextWidth(line);
+    Disp_SetFont(UI_FONT);
+    return Disp_GetUTF8Width(line);
+}
+
+static void text_draw_line(uint16_t x, uint16_t y, const char *line, uint8_t utf8)
+{
+    if(utf8)
+        DPC_I18n_DrawText(x, y, line);
+    else
+    {
+        Disp_SetFont(UI_FONT);
+        Disp_DrawStr(x, y, line);
+    }
+}
+
+/* Width-based wrapping of complete UTF-8 code points. No heap or split
+ * multibyte glyphs. The original 128x80 dialog and explicit line breaks stay. */
 void Text_Widget(ui_t *ui)
 {
-    if (!ui || !ui->nowItem || !ui->nowItem->element || !ui->nowItem->element->text) {
+    char line[128];
+    unsigned len = 0u;
+    uint16_t y;
+    uint8_t utf8;
+    const uint16_t left = 4u;
+    const uint16_t right = UI_HOR_RES - 4u; /* 120px, preserves 20 ASCII cells */
+    if(!ui || !ui->nowItem || !ui->nowItem->element || !ui->nowItem->element->text)
         return;
-    }
-
-    const int fontWidth = ui->nowItem->element->text->fontWidth;
-    const int fontHight = ui->nowItem->element->text->fontHight;
-    const char* text_ptr = ui->nowItem->element->text->ptr;
-    const uint8_t * font = ui->nowItem->element->text->font;
-
-    // 设置字体
-    Disp_SetFont(font);
-
-    //计算字符总数
-    int char_cnt = strlen(text_ptr);
-
-    //计算每行的最大字符数
-    int lineMaxCnt = UI_HOR_RES / fontWidth - 1;
-
-    //每行已显示过的字符数
-    int printed_char = 0;
-
-    //初始化行号和X坐标
-    int line = 0;
-    int x = ui->nowItem->element->text->fontWidth - 2;
-
-    //等待直到对话框完全显示
-    if (Dialog_Show(ui, 1, 1, UI_HOR_RES - 2, UI_VER_RES - 2)) {
-        for (int i = 0; i < char_cnt; i++) {
-            char c = text_ptr[i];
-            Disp_Putchar(x, fontHight + line * fontHight, c);
-            x += fontWidth;
-            printed_char++;
-            if (c == '\t') {
-                x += fontWidth* 3;
-                printed_char += 3;
-            }
-            if (printed_char >= lineMaxCnt || c == '\n') {
-                line++;
-                x = ui->nowItem->element->text->fontWidth - 2;
-                printed_char = 0;
-            }
-            // 检查是否超出屏幕高度
-            if (line * fontHight >= UI_VER_RES - 2) {
-                break;
-            }
+    const char *ptr = DPC_I18n_Text(ui->nowItem->element->text->ptr);
+    const uint16_t lh = ui->nowItem->element->text->fontHight;
+    if(!lh || !Dialog_Show(ui, 1, 1, UI_HOR_RES - 2, UI_VER_RES - 2))
+        return;
+    y = lh;
+    utf8 = text_paragraph_is_utf8(ptr);
+    while(*ptr && y < UI_VER_RES - 2u)
+    {
+        unsigned n = 1u;
+        const char *part = ptr;
+        unsigned consume;
+        if(*ptr == '\n')
+        {
+            line[len] = '\0';
+            text_draw_line(left, y, line, utf8);
+            len = 0u;
+            y += lh;
+            ++ptr;
+            utf8 = text_paragraph_is_utf8(ptr);
+            continue;
         }
-        Disp_SendBuffer();
+        if(*ptr == '\t')
+        {
+            part = "   ";
+            n = 3u;
+            consume = 1u;
+        }
+        else
+        {
+            n = DPC_I18n_CharBytes(ptr);
+            consume = n;
+        }
+        if(len + n >= sizeof(line))
+        {
+            line[len] = '\0';
+            text_draw_line(left, y, line, utf8);
+            len = 0;
+            y += lh;
+            if(y >= UI_VER_RES - 2u)
+                break;
+        }
+        memcpy(line + len, part, n);
+        line[len + n] = '\0';
+        if(len && text_line_width(line, utf8) > right - left)
+        {
+            line[len] = '\0';
+            text_draw_line(left, y, line, utf8);
+            len = 0u;
+            y += lh;
+            if(y >= UI_VER_RES - 2u)
+                break;
+            memcpy(line, part, n);
+            line[n] = '\0';
+        }
+        len += n;
+        ptr += consume;
     }
+    if(len && y < UI_VER_RES - 2u)
+    {
+        line[len] = '\0';
+        text_draw_line(left, y, line, utf8);
+    }
+    Disp_SendBuffer();
 }

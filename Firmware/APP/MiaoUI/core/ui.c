@@ -31,6 +31,7 @@
 #include "Pages/dashboard.h"   /* 图标页顶部复用 dashboard 第一行状态文本 */
 #include "widget/parameter.h"
 #include "widget/text.h"
+#include "i18n.h"
 #include "stdio.h"
 #include "stdlib.h"
 #include "string.h"
@@ -399,9 +400,12 @@ uint8_t Notifications(ui_t *ui, int16_t x,int16_t y,int16_t targrtW,int16_t targ
     if ((ui->dialog.nowWide == targrtW) && (ui->dialog.nowHigh == targrtH))
     {
         ui->dialog.times = 0;
-        char value[20] = {0};
-        snprintf(value, sizeof(value), "%s OK!", ui->nowItem->itemName);
-        Disp_DrawStr(x + 5, y + targrtH/2, value);
+        const char *label = DPC_I18n_Text(ui->nowItem->itemName);
+        char value[64];
+        int n = snprintf(value, sizeof(value), DPC_I18n_Text("%s OK!"), label);
+        /* A truncated multi-byte label is never sent to the font decoder. */
+        DPC_I18n_DrawText(x + 5, y + targrtH/2,
+                          n >= 0 && (unsigned)n < sizeof(value) ? value : label);
         Change_UIState(ui, UI_ITEM_RUNING);
         return true;
     }
@@ -726,6 +730,13 @@ static void Calculate_PageState(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item,u
 }
 
 //勘误：修复了非菜单第一项返回时位置错误的问题
+/* Full measured width; the title clip, not a width clamp, protects the
+ * right data column, including when the selection rectangle is animated. */
+static uint16_t UI_TextCursorWidth(const char *english)
+{
+    return (uint16_t)(DPC_I18n_TextWidth(DPC_I18n_Text(english)) + 2u);
+}
+
 static void Calculate_Cursor(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item,ui_item_t *next_item){
     if(next_item->page.location != now_Item->page.location){//换页面了
         if(now_Item->itemType == UI_ITEM_PARENTS) Cursor_AnimationParam_Init(ui, next_item);//进入子菜单，初始化子菜单各项目坐标
@@ -735,7 +746,7 @@ static void Calculate_Cursor(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item,ui_i
     switch (Page->type){
     case UI_PAGE_TEXT:
         // 计算当前项名称的宽度（nowWide 为 Q10 定点）
-        ui->cursor.nowWide  = UI_FX(strlen(now_Item->itemName)*UI_FONT_WIDTH + 4);
+        ui->cursor.nowWide  = UI_FX(UI_TextCursorWidth(now_Item->itemName));
         ui->cursor.targrtRow = next_item->y - UI_FONT_HIGHT;
         if (ui->cursor.targrtRow > (ui->textSpace*(UI_VER_RES/ui->textSpace) - ui->textSpace) || ui->cursor.targrtRow < 0)  // 防止光标溢出可视范围
         {
@@ -761,6 +772,25 @@ static void Draw_TextPage(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item, ui_ite
     int32_t selected_anim_y = UI_FX(UI_PAGE_INIT_Y);
     int16_t cursor_target_row = 0;
     uint8_t color = 2;
+    static ui_page_t *s_text_page;
+    static uint8_t s_text_locale;
+
+    /* Reset horizontal title scroll when entering another page or changing
+     * the locale, because glyph advances and text length can change. */
+    if(s_text_page != Page || s_text_locale != DPC_I18n_IsChinese())
+    {
+        ui_item_t *it = Page->item.head;
+        for(uint16_t i = 0u; i <= Page->length; ++i)
+        {
+            it->x = UI_PAGE_INIT_X;
+#if UI_TITLE_ROLL == 1
+            it->rollState = UI_ITEM_ROLL_STOP;
+#endif
+            it = it->nextItem;
+        }
+        s_text_page = Page;
+        s_text_locale = DPC_I18n_IsChinese();
+    }
 
     /* 切页时，重新初始化文本动画位置 */
     if (ui->nowItem->page.location != next_item->page.location)
@@ -792,6 +822,7 @@ static void Draw_TextPage(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item, ui_ite
                 const ui_data_t *data = temp_item->element->data;
                 char Data[16] = {0};
                 uint16_t y = (uint16_t)UI_FXI(temp_item->animationY);
+                Disp_SetFont(UI_FONT); /* fixed-width ASCII data, unchanged */
                 Disp_SetClipWindow(UI_DATA_X0, UI_DATA_Y0, UI_DATA_X1, UI_DATA_Y1);
 
                 switch (data->dataType)
@@ -845,45 +876,55 @@ static void Draw_TextPage(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item, ui_ite
             }
             Disp_SetClipWindow(UI_TITLE_X0, UI_TITLE_Y0, UI_TITLE_X1, UI_TITLE_Y1);
 
+            const char *label = DPC_I18n_Text(temp_item->itemName);
 #if ( UI_TITLE_ROLL == 1 )
-            switch (temp_item->rollState)
+            int16_t width = (int16_t)DPC_I18n_TextWidth(label);
+            const int16_t available = UI_TITLE_X1 - UI_TITLE_X0 - 2;
+            if(width <= available)
             {
-            case UI_ITEM_ROLL_STOP:
-                if (strlen(temp_item->itemName) * UI_FONT_WIDTH > (UI_TITLE_X1 - UI_TITLE_X0))
+                temp_item->x = UI_PAGE_INIT_X;
+                temp_item->rollState = UI_ITEM_ROLL_STOP;
+            }
+            else
+            {
+                switch(temp_item->rollState)
+                {
+                case UI_ITEM_ROLL_STOP:
                     temp_item->rollState = UI_ITEM_ROLL_FORWARD;
-                break;
-
-            case UI_ITEM_ROLL_FORWARD:
-                temp_item->x--;
-                if ((strlen(temp_item->itemName) * UI_FONT_WIDTH + temp_item->x) < (UI_TITLE_X1 - UI_TITLE_X0))
-                    temp_item->rollState = UI_ITEM_ROLL_BACKWARD;
-                break;
-
-            case UI_ITEM_ROLL_BACKWARD:
-                temp_item->x++;
-                if (temp_item->x > 0)
-                    temp_item->rollState = UI_ITEM_ROLL_STOP;
-                break;
-
-            default:
-                break;
+                    break;
+                case UI_ITEM_ROLL_FORWARD:
+                    --temp_item->x;
+                    if(width + temp_item->x <= available)
+                        temp_item->rollState = UI_ITEM_ROLL_BACKWARD;
+                    break;
+                case UI_ITEM_ROLL_BACKWARD:
+                    if(++temp_item->x >= UI_PAGE_INIT_X)
+                    {
+                        temp_item->x = UI_PAGE_INIT_X;
+                        temp_item->rollState = UI_ITEM_ROLL_STOP;
+                    }
+                    break;
+                default:
+                    break;
+                }
             }
 #endif
-            Disp_DrawStr(temp_item->x, (uint16_t)UI_FXI(temp_item->animationY), temp_item->itemName);
+            DPC_I18n_DrawText((uint16_t)(temp_item->x + 1), (uint16_t)UI_FXI(temp_item->animationY), label);
         }
 
         temp_item = temp_item->nextItem;
     }
 
     /* 高光框：保留动画，但动画目标改成“选中项实际动画基线Y + 固定补偿” */
-    cursor_target_row = (int16_t)(UI_FXI(selected_anim_y) - UI_FONT_HIGHT + UI_TEXT_CURSOR_Y_OFFSET);
+    cursor_target_row = (int16_t)(UI_FXI(selected_anim_y) - UI_FONT_HIGHT + UI_TEXT_CURSOR_Y_OFFSET
+                                  - 1 - (DPC_I18n_IsChinese() ? 1 : 0));
 
     Disp_SetClipWindow(UI_TITLE_X0, UI_TITLE_Y0, UI_TITLE_X1, UI_TITLE_Y1);
     color = 2;
     Disp_SetDrawColor(&color);
     ui->cursor.nowRow = UI_Animation(UI_FX(cursor_target_row), ui->cursor.nowRow, &ui->animation.cursor_ani);
     ui->cursor.nowWide = UI_Animation(UI_FX(ui->cursor.targrtWide), ui->cursor.nowWide, &ui->animation.cursor_ani);
-    Disp_DrawRBox(ui->headX, (uint16_t)UI_FXI(ui->cursor.nowRow), (uint16_t)UI_FXI(ui->cursor.nowWide), UI_FONT_HIGHT - 1, 0);
+    Disp_DrawRBox(UI_TITLE_X0, (uint16_t)UI_FXI(ui->cursor.nowRow), (uint16_t)UI_FXI(ui->cursor.nowWide), UI_FONT_HIGHT + 1u, 0);
     Disp_SetMaxClipWindow();
 }
 
@@ -891,6 +932,8 @@ static void Draw_TextPage(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item, ui_ite
 static void Draw_ImagePage(ui_t *ui, ui_page_t *Page, ui_item_t *nowItem, ui_item_t *next_item)
 {
     static int16_t tital_x = 0;
+    static ui_item_t *s_icon_item;
+    static uint8_t s_icon_locale;
     ui_item_t * temp_item = Page->item.head; //从页面的头部开始遍历
     uint8_t color = 2;
     Draw_ImagePage_Optionbar(ui, nowItem, next_item);
@@ -924,36 +967,50 @@ static void Draw_ImagePage(ui_t *ui, ui_page_t *Page, ui_item_t *nowItem, ui_ite
         temp_item = temp_item->nextItem;
     }
 
-    #if ( UI_TITLE_ROLL == 1 )
-    // 根据temp_item的滚动状态选择不同的操作
-    switch (next_item->rollState)
+    /* Dashboard_DrawStatusLine forced the original ASCII font; the
+     * localized bottom title explicitly chooses its own font again. */
+    const char *label = DPC_I18n_Text(next_item->itemName);
+#if ( UI_TITLE_ROLL == 1 )
+    int16_t width = (int16_t)DPC_I18n_TextWidth(label);
+    if(s_icon_item != next_item || s_icon_locale != DPC_I18n_IsChinese())
     {
-    case UI_ITEM_ROLL_STOP: // 如果项目处于静止状态
-        // 检查项目名称是否需要开始滚动
-        if(strlen(next_item->itemName) * UI_FONT_WIDTH > UI_HOR_RES)
-            next_item->rollState = UI_ITEM_ROLL_FORWARD; // 如果名称宽度大于项目区域宽度，改变状态为向前滚动
-        else tital_x = 0;
-        break;
-    case UI_ITEM_ROLL_FORWARD: // 如果项目处于向前滚动状态
-        tital_x --; // 向左移动项目
-        // 检查是否需要改变滚动方向
-        if((strlen(next_item->itemName) * UI_FONT_WIDTH + tital_x) < UI_HOR_RES)
-            next_item->rollState = UI_ITEM_ROLL_BACKWARD; // 如果项目移出左边界，改变状态为向后滚动
-        break;
-    case UI_ITEM_ROLL_BACKWARD: // 如果项目处于向后滚动状态
-        tital_x ++; // 向右移动项目
-        // 检查项目是否完全回到视图内
-        if(tital_x > 0)
-            next_item->rollState = UI_ITEM_ROLL_STOP; // 如果项目完全回到视图内，改变状态为向前滚动
-        break;
-    default: // 默认情况下不做任何操作
-        break;
+        tital_x = 0;
+        next_item->rollState = UI_ITEM_ROLL_STOP;
+        s_icon_item = next_item;
+        s_icon_locale = DPC_I18n_IsChinese();
     }
-    #endif
-
-    color = ui->bgColor^0x01;;
-    Disp_SetDrawColor(&color); // 设置特定的颜色，通常用于高亮显示
-    Disp_DrawStr(tital_x, UI_VER_RES - 2, next_item->itemName);
+    if(width <= UI_HOR_RES)
+    {
+        tital_x = 0;
+        next_item->rollState = UI_ITEM_ROLL_STOP;
+    }
+    else
+    {
+        switch(next_item->rollState)
+        {
+        case UI_ITEM_ROLL_STOP:
+            next_item->rollState = UI_ITEM_ROLL_FORWARD;
+            break;
+        case UI_ITEM_ROLL_FORWARD:
+            --tital_x;
+            if(width + tital_x <= UI_HOR_RES)
+                next_item->rollState = UI_ITEM_ROLL_BACKWARD;
+            break;
+        case UI_ITEM_ROLL_BACKWARD:
+            if(++tital_x >= 0)
+            {
+                tital_x = 0;
+                next_item->rollState = UI_ITEM_ROLL_STOP;
+            }
+            break;
+        default:
+            break;
+        }
+    }
+#endif
+    color = ui->bgColor^0x01;
+    Disp_SetDrawColor(&color);
+    DPC_I18n_DrawText((uint16_t)tital_x, UI_VER_RES - 2, label);
     // 根据目标位置和当前位置，以及PID算法计算并更新当前选项的位置和宽度
     ui->cursor.nowColumn = UI_Animation(UI_FX(ui->cursor.targrtColumn), ui->cursor.nowColumn, &ui->animation.cursor_ani);
     // 绘制选中项的下划线
@@ -979,10 +1036,6 @@ static void Draw_UI(ui_t *ui, ui_page_t *Page, ui_item_t *nowItem, ui_item_t *ne
     // 计算页面状态
     if(ui->menuState == UI_PAGE_RUNING) Calculate_PageState(ui, Page, nowItem, next_item);
 
-    // 计算下一个将要选中项的名称宽度
-    if(strlen(next_item->itemName)* UI_FONT_WIDTH > (UI_TITLE_X1 - UI_TITLE_X0))
-    ui->cursor.targrtWide = UI_TITLE_X1 - UI_TITLE_X0;
-    else ui->cursor.targrtWide = strlen(next_item->itemName)* UI_FONT_WIDTH;
     // 开始绘制菜单界面
     //清屏
     Disp_SetDrawColor(&color); // 设置背景颜色
@@ -999,6 +1052,8 @@ static void Draw_UI(ui_t *ui, ui_page_t *Page, ui_item_t *nowItem, ui_item_t *ne
 
     if(Page->type == UI_PAGE_TEXT)
     {
+        /* Recompute after navigation restores any saved cursor width. */
+        ui->cursor.targrtWide = UI_TextCursorWidth(next_item->itemName);
         Draw_TextPage_Optionbar(ui, nowItem, next_item); // 绘制选项及其位置
         Draw_TextPage(ui, Page, nowItem, next_item);
     }

@@ -24,6 +24,7 @@
 #include "app_tasks.h"
 #include "core/ui.h"
 #include "display/dispDriver.h"
+#include "i18n.h"
 
 /* Preserve the original nominal 2.4 s dwell independently of UI cadence. */
 #define BURNIN_INTRO_MS      2400u
@@ -35,6 +36,8 @@
 static ui_item_t s_soft_reset_item;
 static ui_item_t s_isp_reboot_item;
 static ui_item_t s_fan_delay_item;
+static ui_item_t s_language_item;
+static uint8_t s_language_state;
 static ui_item_t s_temp_source_item[2];
 static uint8_t s_temp_source_state[2];
 static uint8_t   s_fan_delay_state;   /* 0 = 40/37 C, 1 = +10 C (50/47 C) */
@@ -60,12 +63,20 @@ static void temperature_sources_clicked(ui_t *ui)
                               (s_temp_source_state[1] ? APP_TEMP_SOURCE_2 : 0u));
 }
 
+static void language_clicked(ui_t *ui)
+{
+    (void)ui;
+    DPC_I18n_SetChinese(s_language_state);
+}
+
 void Add_Service_Items(ui_page_t *parent_page)
 {
     static ui_data_t fan_delay_data;
     static ui_element_t fan_delay_element;
     static ui_data_t temp_data[2];
     static ui_element_t temp_element[2];
+    static ui_data_t language_data;
+    static ui_element_t language_element;
     static const char *const temp_names[2] = { " Use Temp#1", " Use Temp#2" };
     uint8_t n;
     uint8_t sources = APP_GetTemperatureSources();
@@ -103,6 +114,17 @@ void Add_Service_Items(ui_page_t *parent_page)
         AddItem(temp_names[n], UI_ITEM_DATA, 0, &s_temp_source_item[n],
                 parent_page, 0, 0);
     }
+    s_language_state = DPC_I18n_IsChinese();
+    language_data.name = " Language";
+    language_data.ptr = &s_language_state;
+    language_data.function = language_clicked;
+    language_data.functionType = UI_DATA_FUNCTION_STEP_EXECUTE;
+    language_data.dataType = UI_DATA_SWITCH;
+    language_data.actionType = UI_DATA_ACTION_RW;
+    language_element.data = &language_data;
+    Create_element(&s_language_item, &language_element);
+    AddItem(language_data.name, UI_ITEM_DATA, 0, &s_language_item,
+            parent_page, 0, 0);
     AddItem(" Reset Now", UI_ITEM_WORD, 0, &s_soft_reset_item,
             parent_page, 0, SoftReset_Action);
     AddItem(" Reboot to ISP", UI_ITEM_WORD, 0, &s_isp_reboot_item,
@@ -143,12 +165,12 @@ static void burnin_paint_intro(const ui_t *ui)
     Disp_SetDrawColor(&bg);
     Disp_DrawBox(0u, 0u, UI_HOR_RES, UI_VER_RES);
     Disp_SetDrawColor(&fg);
-    Disp_DrawStr(BURNIN_LINE_X, BURNIN_LINE1_Y, "Burn-in Test");
-    Disp_DrawStr(BURNIN_LINE_X, BURNIN_LINE1_Y + BURNIN_LINE_STEP, "Checks the OLED for");
-    Disp_DrawStr(BURNIN_LINE_X, BURNIN_LINE1_Y + 2u * BURNIN_LINE_STEP, "decay after many");
-    Disp_DrawStr(BURNIN_LINE_X, BURNIN_LINE1_Y + 3u * BURNIN_LINE_STEP, "hours of light-up.");
-    Disp_DrawStr(BURNIN_LINE_X, BURNIN_LINE1_Y + 4u * BURNIN_LINE_STEP, "White screen - press");
-    Disp_DrawStr(BURNIN_LINE_X, BURNIN_LINE1_Y + 5u * BURNIN_LINE_STEP, "any key to leave.");
+    DPC_I18n_DrawLabel(BURNIN_LINE_X, BURNIN_LINE1_Y, "Burn-in Test");
+    DPC_I18n_DrawLabel(BURNIN_LINE_X, BURNIN_LINE1_Y + BURNIN_LINE_STEP, "Checks the OLED for");
+    DPC_I18n_DrawLabel(BURNIN_LINE_X, BURNIN_LINE1_Y + 2u * BURNIN_LINE_STEP, "decay after many");
+    DPC_I18n_DrawLabel(BURNIN_LINE_X, BURNIN_LINE1_Y + 3u * BURNIN_LINE_STEP, "hours of light-up.");
+    DPC_I18n_DrawLabel(BURNIN_LINE_X, BURNIN_LINE1_Y + 4u * BURNIN_LINE_STEP, "White screen - press");
+    DPC_I18n_DrawLabel(BURNIN_LINE_X, BURNIN_LINE1_Y + 5u * BURNIN_LINE_STEP, "any key to leave.");
     Disp_SendBuffer();
 }
 

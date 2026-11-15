@@ -26,13 +26,15 @@
  */
 #include "widget/parameter.h"
 #include "stdio.h"
+#include <string.h>
 #include "core/ui.h"
 #include "display/dispDriver.h"
+#include "i18n.h"
 
 void ParameterSetting_Widget(ui_t *ui)
 {
     uint8_t color;
-    char value[20] = {0};
+    char num[16] = {0};
     int x = 4, y = 12, w = UI_HOR_RES - 8, h = UI_VER_RES - 32;
     int Step = ui->nowItem->element->data->step;
 
@@ -63,30 +65,26 @@ void ParameterSetting_Widget(ui_t *ui)
 
         if(ui->nowItem->element->data->name == NULL) ui->nowItem->element->data->name = "Null!!";
 
-        switch (ui->nowItem->element->data->dataType)
-        {
-        case UI_DATA_INT:
-            snprintf(value, sizeof(value), "%s:%d ", ui->nowItem->element->data->name, *(int *)(ui->nowItem->element->data->ptr));
-            break;
-        case UI_DATA_FIXED:
-        {
-            /* 定点整数：真实值 = 值 / 10^decimals（无 FPU，不用 %f） */
-            char num[16];
-            UI_FmtScaled(num, sizeof(num), *(int *)(ui->nowItem->element->data->ptr),
-                         ui->nowItem->element->data->decimals);
-            snprintf(value, sizeof(value), "%s:%s ", ui->nowItem->element->data->name, num);
-            break;
-        }
-        default:
-            break;
-        }
-        //清除上一次的字符
+        const ui_data_t *data = ui->nowItem->element->data;
+        const char *label = DPC_I18n_Text(data->name);
+        if(data->ptr && (data->dataType == UI_DATA_INT || data->dataType == UI_DATA_FIXED))
+            UI_FmtScaled(num, sizeof(num), *(const int *)data->ptr,
+                         data->dataType == UI_DATA_FIXED ? data->decimals : 0u);
+        else
+            strcpy(num, "--");
+
+        /* Keep numbers in the original ASCII font. Clip the translated label
+         * before the right-aligned value; never split a UTF-8 string. */
         Disp_SetDrawColor(&ui->bgColor);
-        Disp_DrawBox(x + 10, y + 1, 108, 12);
+        Disp_DrawBox(x + 3, y + 1, w - 6, 14);
         color = ui->bgColor ? 0 : 1;
         Disp_SetDrawColor(&color);
-        //绘制数据
-        Disp_DrawStr(x + 4, y + 13, value);
+        uint16_t num_x = (uint16_t)(x + w - 4 - strlen(num) * UI_FONT_WIDTH);
+        Disp_SetClipWindow(x + 3, y + 1, num_x > x + 5 ? num_x - 2u : x + 3, y + 15);
+        DPC_I18n_DrawText(x + 4, y + 13, label);
+        Disp_SetMaxClipWindow();
+        Disp_SetFont(UI_FONT);
+        Disp_DrawStr(num_x, y + 13, num);
         Disp_SendBuffer();
     }
 }

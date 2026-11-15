@@ -1,5 +1,5 @@
 /* DPC27A UI translation inventory (UTF-8). Same { English, zh-Hans }
- * initializer convention as IH01A. Planning only: not included/compiled yet.
+ * initializer convention as IH01A. Included by APP/i18n.c (display only).
  * Exact English keys; preserve prefix punctuation and format specifiers.
  * Do not translate internal identifiers, CLI, USB-PD protocol names or telemetry.
  * Dashboard_Page and its shared Dashboard_DrawStatusLine remain ASCII with
@@ -18,7 +18,9 @@
     { "-Dino Game", "-恐龙游戏" },
     { "-About", "-关于" },
 
-/* Ports (technical identifiers deliberately unchanged) */
+/* Ports (technical identifiers deliberately unchanged). Fallback already
+ * returns the original, so omit these identity rows from the runtime table. */
+#ifndef DPC_I18N_RUNTIME_TABLE
     { "-TypeA+C", "-TypeA+C" },
     { "[TypeA+C]", "[TypeA+C]" },
     { "-TypeC1", "-TypeC1" },
@@ -36,6 +38,7 @@
     { " SFCP", " SFCP" },
     { " AFC", " AFC" },
     { " TFCP", " TFCP" },
+#endif
 
 /* Settings / sleep / display / system */
     { "-Display", "-显示" },
@@ -68,6 +71,7 @@
     { " Use Temp#2", " 使用温度#2" },
     { " Reset Now", " 系统重启" },
     { " Reboot to ISP", " 重启至ISP" },
+    { " Language", " 中文界面" },
 
 /* About / burn-in / game / widget */
     { "  Desktop PD Power\nSource: https://github.com/TKWTL/Desktop_PD_Power_Converter\n MiaoUI u8g2 coroOS\nMIT BSD-2 BSD-3 AGPL", "  桌面PD电源\n源码: https://github.com/TKWTL/Desktop_PD_Power_Converter\n MiaoUI u8g2 coroOS\nMIT BSD-2 BSD-3 AGPL" },

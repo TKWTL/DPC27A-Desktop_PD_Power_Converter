@@ -155,7 +155,7 @@
       - Only character values 0 to 255 are supported in the font file.
 */
 #ifndef U8G2_WITHOUT_UNICODE
-//#define U8G2_WITH_UNICODE
+#define U8G2_WITH_UNICODE
 #endif
 
 

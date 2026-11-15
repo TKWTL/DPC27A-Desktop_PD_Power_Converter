@@ -8,7 +8,7 @@
 APP/                 入口、任务注册 + MiaoUI + 页面函数
   Services/          输出侧策略模块:总功率限制(`power_limit.c/.h`)、功率分配(`power_alloc.c/.h`)、风扇曲线(`fan_control.c/.h`)
   framework/         低功耗状态机与 UI_OFF 休眠(`pm_*.c/.h`,含 Sleep 菜单)
-  MiaoUI/            精简菜单/UI 移植,单字体 + XBM 图标(仪表盘/Settings 子页/Statistics/关于/烧屏/恐龙)
+  MiaoUI/            精简菜单/UI 移植,ASCII/中文子集字体 + XBM 图标(仪表盘/Settings 子页/Statistics/关于/烧屏/恐龙)
   Pages/             页面函数(Dashboard 仪表盘、`port_pages.c` 端口协议页、服务页、`game_dinosaur.c` 小游戏)
 BSP/                 板级启动 + 器件驱动
   SW3538/            硬件 I2C 双口快充控制器驱动
@@ -245,6 +245,11 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 ### 2026-11-15：开关间隙与恐龙手感
 
 开关框及填充左移2px，右缘距 scrollbar 2px，数值栏不变。Dino 世界速度降至75%，跳跃模拟时间384→768ms、原高度不变，腿动画初始帧间隔48→96ms；保留16ms模拟、分数速度、生成倒计时和通信/UI调度。完成静态检查、10000步世界位移余数验证及跳跃逐点对照，未目标编译及板测。基于 IH01A 的 UTF-8 绘图/选框提取计划见 [APP/I18N.md](APP/I18N.md)，仅规划不启用中文化。
+
+### 2026-11-15：中文化正式接入
+
+- [APP/I18N.md](APP/I18N.md)：System→Language 默认英文/开启中文，81 原文键、64有效翻译、100汉字+95 ASCII，中文子集3655 B（原始BDF不可访问，复用两份Fusion Pixel子集及补充26个Ark Pixel真实字形，OFL许可保留）。U8G2_WITH_UNICODE 已开启，Clean Build必要，未改ASCII原字体、128×80、Dashboard及共用顶栏、数值右对齐。选框真实字宽+2、高13px，title clip裁剪，不限制宽度。未目标构建/板测，实际Flash增量待MAP。
+- 恐龙跳跃模拟时长768→576ms，保留39px峰值，世界/腿/分数/生成速度与调度不变。36步整数插值模型核对完成。
 
 ## 模块文档
 
