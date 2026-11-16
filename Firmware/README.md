@@ -72,9 +72,9 @@ USBPD 唯一抢占级 0，SPI/USART/I²C DMA、I²C EV/ER、SysTick 为抢占级
 ## 显示、菜单与温控
 
 - SH1107 原生 80×128、逻辑 128×80，默认 R1，反向 R3，外部 VPP，内部电荷泵关闭。u8g2 1280 B 全帧缓冲加 1280 B DMA 快照；16 页 DMA 链，忙时合并中间帧。
-- 启动进入 Dashboard；菜单根页 Dashboard / Settings / Statistics（系统数据）/ Dino Game / About；Settings 内含返回、Display、TypeA+C、TypeC1、TypeC2、System。默认简体中文，System 的 Language 开关可切英文；设置 RAM-only。
+- 启动进入 Dashboard；菜单根页 Dashboard / Settings / Statistics（系统数据）/ Dino Game（小恐龙）/ About；Settings 内含返回、Display、TypeA+C、TypeC1、TypeC2、System。默认简体中文，System 的 Language 开关可切英文；设置 RAM-only。
 - Dashboard 始终 ASCII：首行温度、整数 VBUS、Wmax、UVP/NEG/EPR/PPS/SPR/DC；其下三列 TypeA+C / TypeC1 / TypeC2，输出 V（2 位）、A（3 位）、W（≥10 W 两位，否则三位）、协议。离线为 ---，无负载 NC，无快充 5V。数值 6 px 等宽、右对齐，内容或面板归属变化才提交帧。
-- Statistics 每 200 ms 最多更新一次，6 项只读镜像：PDO（DC/NEG/SPR/PPS/EPR）、Req(V)、Cur(A)、VBUS(V)、Temp#1(C)、Temp#2(C)；合同未就绪/温度失效用 --，超宽数值用 OVF。
+- Statistics 每 200 ms 最多更新一次，6 项只读镜像：PDO（DC/NEG/SPR/PPS/EPR）、Req(V，请求电压)、Cur(A)、VBUS(V，输入电压)、Temp#1(C)、Temp#2(C)；合同未就绪/温度失效用 --，超宽数值用 OVF。
 - 温度 #1 GX21M15U，#2 SW3538 外接 NTC；System 独立开关默认均启用。控制温度为有效且启用源的均值或唯一有效源；均不可用时 Dashboard 显示 --.-C，风扇全速（UVP 优先停转）。Statistics 独立显示两个有效原始镜像。
 - 风扇 40 °C 启动、37 °C 停止，运行最小 duty 80；每升高 1 °C +2，最大 255。Fan +10'C 将两个温度点整体上移 10 °C。
 - 自动休眠默认 1 min，Display → Sleep Options 可调；Keep On >5W 默认开，仅冻结自动倒计时。根菜单长按 K2 手动关屏，不停止 PD/遥测/风扇。新按键、PD/VBUS/端口插拔、功率跨 5 W 或相对基准累计变化 ≥2 W 唤醒；稳定大功率不反复唤醒手动关屏。
@@ -82,7 +82,7 @@ USBPD 唯一抢占级 0，SPI/USART/I²C DMA、I²C EV/ER、SysTick 为抢占级
 
 ## Flash 约束与调试日志
 
-- 唯一字库 font_fusion_pixel_p12_zhcn：209 字形、4,218 B（95 个 h12w6 等宽 ASCII、114 个 Fusion Pixel / Ark Pixel 汉字）。为数组源码大小，不是总 Flash 实测。扩充方式见 [I18N](APP/I18N.md)。
+- 唯一字库 font_fusion_pixel_p12_zhcn：213 字形、4,333 B（95 个 h12w6 等宽 ASCII、118 个 Fusion Pixel / Ark Pixel 汉字）。为数组源码大小，不是总 Flash 实测。扩充方式见 [I18N](APP/I18N.md)。
 - 纯整数 printf（Project/Debug/debug.c），支持 %% %d %i %u %x %X %c %s 与 0/-/宽度；l/ll 按 32 位处理，单条上限 127 字符。不用 %f/软浮点、newlib malloc/assert/fprintf；随机数使用工程自带 rand/srand。UI 定点显示 UI_DATA_FIXED/UI_FmtScaled，动画 Q10。
 - TIME_Micros() 保持硬件 64 位自由运行计数，用 32 位分段除法计算低 32 位微秒；不从低位 ticks 直接除。约 71.58 min 微秒回绕，须以 MAP 核对库辅助是否被剔除。
 

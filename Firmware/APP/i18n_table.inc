@@ -15,18 +15,18 @@
     { "[Return]", "[返回]" },
     { "-Statistics", "-系统数据" },
     { "[Statistics]", "[系统数据]" },
-    { "-Dino Game", "-恐龙游戏" },
+    { "-Dino Game", "-小恐龙" },
     { "-About", "-关于" },
 
-/* Ports (technical identifiers deliberately unchanged). Fallback already
- * returns the original, so omit these identity rows from the runtime table. */
+/* Port menu labels: keep technical identifiers and append settings in zh-Hans.
+ * Protocol names below remain identity rows and are omitted from the runtime table. */
+    { "-TypeA+C", "-TypeA+C设置" },
+    { "[TypeA+C]", "[TypeA+C设置]" },
+    { "-TypeC1", "-TypeC1设置" },
+    { "[TypeC1]", "[TypeC1设置]" },
+    { "-TypeC2", "-TypeC2设置" },
+    { "[TypeC2]", "[TypeC2设置]" },
 #ifndef DPC_I18N_RUNTIME_TABLE
-    { "-TypeA+C", "-TypeA+C" },
-    { "[TypeA+C]", "[TypeA+C]" },
-    { "-TypeC1", "-TypeC1" },
-    { "[TypeC1]", "[TypeC1]" },
-    { "-TypeC2", "-TypeC2" },
-    { "[TypeC2]", "[TypeC2]" },
     { " PD", " PD" },
     { " QC2.0", " QC2.0" },
     { " QC3.0", " QC3.0" },
@@ -82,7 +82,7 @@
     { "White screen - press", "白屏 - 按" },
     { "any key to leave.", "任意键退出." },
     { "Game Over!!", "游戏结束!!" },
-    { "Dino Game V0.1", "恐龙游戏 V0.1" },
+    { "Dino Game V0.1", "小恐龙 V0.1" },
     { "from hjl240", "来自 hjl240" },
     { "Jump to Restart", "跳跃重开" },
     { "Null!!", "空!!" },
@@ -93,12 +93,14 @@
     { " PDO (SPR)", " 档位 (SPR)" },
     { " PDO (PPS)", " 档位 (PPS)" },
     { " PDO (EPR)", " 档位 (EPR)" },
-    { " Req (V)", " 请求 (V)" },
+    { " Req (V)", " 请求电压 (V)" },
     { " Cur (A)", " 电流 (A)" },
-    { " VBUS (V)", " 母线 (V)" },
+    { " VBUS (V)", " 输入电压 (V)" },
     { " Temp#1 (C)", " 温度#1 (C)" },
     { " Temp#2 (C)", " 温度#2 (C)" },
 
 /* Remaining dynamic templates */
-    { "HI %05d %05d", "最高 %05d %05d" },
+#ifndef DPC_I18N_RUNTIME_TABLE
+    { "HI %05d %05d", "HI %05d %05d" },
+#endif
     { "%s OK!", "%s 完成!" },

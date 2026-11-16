@@ -29,7 +29,7 @@ The firmware embeds one project-local U8g2 RLE Unicode subset,
 `Firmware/APP/MiaoUI/fonts/font_fusion_pixel_p12_zhcn.c`. Its 95 fixed-width
 ASCII glyph bitmaps are derived from the original MiaoUI h12w6 font
 (Copyright (c) 2025 JFeng-Z; [MIT license](Firmware/APP/MiaoUI/LICENSE)).
-Its 114 Han glyphs are derived from two font projects, both under the
+Its 118 Han glyphs are derived from two font projects, both under the
 **SIL Open Font License, Version 1.1 (OFL-1.1)**:
 
 - [Fusion Pixel Font](https://github.com/TakWolf/fusion-pixel-font) — Copyright (c) 2022, TakWolf (https://takwolf.com). Selected 12px glyphs reused from the IH01A RLE and original LVGL subsets. [Full license](Firmware/APP/MiaoUI/fonts/LICENSE-OFL-FUSION).

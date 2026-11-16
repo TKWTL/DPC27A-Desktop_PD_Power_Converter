@@ -25,9 +25,9 @@ MiaoUI 精简移植，适配 SH1107 128×80 横屏及双按键。页面函数在
       Keep On >5W
       Contrast / Background / Screen Flip
       -Burn-in Test
-    -TypeA+C [PD, QC2.0, QC3.0, QC3+, QC4+, FCP, SCP, PE, SFCP, AFC, TFCP]
-    -TypeC1  [PD, QC2.0, QC3.0, FCP, SCP, PE, SFCP, AFC]
-    -TypeC2  [同 TypeC1]
+    -TypeA+C (中文：TypeA+C设置) [PD, QC2.0, QC3.0, QC3+, QC4+, FCP, SCP, PE, SFCP, AFC, TFCP]
+    -TypeC1  (中文：TypeC1设置) [PD, QC2.0, QC3.0, FCP, SCP, PE, SFCP, AFC]
+    -TypeC2  (中文：TypeC2设置) [同 TypeC1]
     -System [文本页]
       [Return]
       Fan +10'C / Use Temp#1 / Use Temp#2 / Language
@@ -35,7 +35,7 @@ MiaoUI 精简移植，适配 SH1107 128×80 横屏及双按键。页面函数在
   -Statistics (系统数据)
     [Menu]
     PDO / Req (V) / Cur (A) / VBUS (V) / Temp#1 (C) / Temp#2 (C)
-  -Dino Game
+  -Dino Game (小恐龙)
   -About
 ```
 
@@ -47,7 +47,7 @@ System/Settings 共用配置图标，Display 复用烧屏图标；Statistics 图
 - 首行是融合温度、整数输入伏数、Wmax、输入状态 UVP/NEG/EPR/PPS/SPR/DC（ASCII，不翻译）。
 - 三列 TypeA+C、TypeC1、TypeC2；输出电压两位、电流三位、功率 ≥10 W 两位、<10 W 三位小数；6 px 等宽，右界 43/85/127，基线 12+13n。离线 ---、未连接 NC、无快充 5V；PD 固定/可调分别 PD-FIX/PD-PPS。SW3538 共享电压及两路电流和，协议居中偏移 3 px。
 - 源数据为镜像；Disp_GetFlushCount() 变化或内容签名变化时重发 Dashboard，避免返回页面漏刷。进入全屏页应恢复最大剪裁窗口。
-- Statistics 是 6 个只读 UI_ITEM_DATA，PDO 为 INT，Req/Cur/VBUS 两位 FIXED、两路温度一位 FIXED；200 ms 目标更新，未就绪/失效 --，超宽 OVF，不自行 I²C。
+- Statistics 是 6 个只读 UI_ITEM_DATA，PDO 为 INT，Req（请求电压）/Cur/VBUS（输入电压）两位 FIXED、两路温度一位 FIXED；200 ms 目标更新，未就绪/失效 --，超宽 OVF，不自行 I²C。
 
 ## 数据控件与布局
 
@@ -62,7 +62,7 @@ thread_ui 上电 200 ms 后初始化（等待 SoftI2C 空闲）；派发 2 ms、
 ## 服务页
 
 - Burn-in Test：Display 内，说明 2400 ms（可由按键操作跳过），随后白屏，任意键退出。
-- Dino Game：K1 跳跃/失败重开、K2 退出并保留进度；16 ms 模拟时钟、每次最多补 3 tick，世界位移为原版 75%、分数半速；跳跃 36 tick=576 ms，原 39px 高度不变，腿动画每 9 px。中文结算采用实际测宽、13 px 基线间距；英文保留原坐标。
+- Dino Game（小恐龙，分数前缀 HI 不翻译）：K1 跳跃/失败重开、K2 退出并保留进度；16 ms 模拟时钟、每次最多补 3 tick，世界位移为原版 75%、分数半速；跳跃 36 tick=576 ms，原 39px 高度不变，腿动画每 9 px。中文结算采用实际测宽、13 px 基线间距；英文保留原坐标。
 - About：英文/中文按整码点及 120 px 测宽折行，12 px 行距，最多 6 行；当前内容含 Git 路径、支持 PD/QC/SCP 等快充描述。字符及授权见 [I18N](../I18N.md)。
 
 更改字体/布局需 Clean Build、检查 MAP、实测双语和两种显示方向。历史试验见 [审查前文档](https://github.com/TKWTL/DPC27A-Desktop_PD_Power_Converter/blob/341b2c590010e1c9ccb11c7558f8f778ef4c64d2/Firmware/APP/MiaoUI/README.md)；本页为当前源码说明。
