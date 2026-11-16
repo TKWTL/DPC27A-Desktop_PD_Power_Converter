@@ -262,7 +262,8 @@ static void dash_fill_sw3526(dash_column_t *col, SW3526_Handle *handle, const ch
         if(!PD_IsPowerReady())
             return "NEG";
 
-        return PD_IsEPRContractActive() ? "EPR" : "SPR";
+        return PD_IsEPRContractActive() ? "EPR" :
+               PD_IsPPSContractActive() ? "PPS" : "SPR";
     }
 
     /* No PD contract: the board input is the DC path. */

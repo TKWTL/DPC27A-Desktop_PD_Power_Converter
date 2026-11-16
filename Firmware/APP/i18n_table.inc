@@ -13,8 +13,8 @@
     { "-Settings", "-设置" },
     { "[Settings]", "[设置]" },
     { "[Return]", "[返回]" },
-    { "-Statistics", "-统计" },
-    { "[Statistics]", "[统计]" },
+    { "-Statistics", "-系统数据" },
+    { "[Statistics]", "[系统数据]" },
     { "-Dino Game", "-恐龙游戏" },
     { "-About", "-关于" },
 
