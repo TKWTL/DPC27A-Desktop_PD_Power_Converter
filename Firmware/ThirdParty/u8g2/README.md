@@ -27,4 +27,4 @@
 
 ## 2026-11-15：Unicode 扩展
 
-`u8g2.h` 的 `U8G2_WITH_UNICODE` 开启，所有文件需一致 Clean Build。原ASCII字体仍可通过 `u8g2_DrawStr`使用；中文文本经显式UTF-8接口调用，使用专用RLE子集。未引入全量字库/全量驱动。参见 [APP/I18N.md](../../APP/I18N.md)。
+`u8g2.h` 的 `U8G2_WITH_UNICODE` 开启，所有文件需一致 Clean Build。唯一共享字体 `font_fusion_pixel_p12_zhcn` 内含原 h12w6 6px 等宽 ASCII 和 12px 汉字；ASCII 经 `u8g2_DrawStr`，中文经显式 UTF-8 接口。没有单独链接旧 ASCII 字库，当前字形来源详见 I18N。未引入全量字库/全量驱动。参见 [APP/I18N.md](../../APP/I18N.md)。

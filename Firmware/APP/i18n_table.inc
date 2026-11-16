@@ -70,11 +70,11 @@
     { " Use Temp#1", " 使用温度#1" },
     { " Use Temp#2", " 使用温度#2" },
     { " Reset Now", " 系统重启" },
-    { " Reboot to ISP", " 重启至ISP" },
+    { " Reboot to ISP", " 重启至ISP模式" },
     { " Language", " 中文界面" },
 
 /* About / burn-in / game / widget */
-    { "  Desktop PD Power\n1-3Ch Power Converter with Quick Charge\n Git: github.com/TKWTL/DPC27A-Desktop_PD_Power_Converter", "  桌面PD电源转换器\n1到3通道电源转换,支持快充\n Git: github.com/TKWTL/DPC27A-Desktop_PD_Power_Converter" },
+    { "  Desktop PD Power\n1-3Ch Power Converter with Quick Charge\n Git: github.com/TKWTL/DPC27A-Desktop_PD_Power_Converter", "  桌面PD电源转换器\n1到3通道电源转换,支持PD/QC/SCP等快充\n Git: github.com/TKWTL/DPC27A-Desktop_PD_Power_Converter" },
     { "Burn-in Test", "老化测试" },
     { "Checks the OLED for", "检查OLED" },
     { "decay after many", "长时间点亮后" },

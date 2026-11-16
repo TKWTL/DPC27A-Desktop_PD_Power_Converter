@@ -65,3 +65,7 @@ if(p->output_short) { /* output short */ }
 - 保留位不应修改；协议 API 对包含保留/无关位的寄存器使用 read-modify-write。
 - 协议开关可能导致已连接设备重新协商，不应在高速周期任务中反复调用。
 - `SetPowerLimitW()` 的临时功率编码已改为 per-handle scratch，不再使用跨协程不安全的自动/全局临时值。
+
+## 整机集成
+
+两颗器件各用独立 GPIO I²C（#1 PA4/PA3，#2 PA1/PA2）；thread_power_mirror 轮后延时 333 ms，共用调度但各自句柄。产品分配上限 65 W，底层 API 允许 12–71 W，不能把 API 最大值误作产品额定值。协议菜单公开 8 个开关（PD/QC2.0/QC3.0/FCP/SCP/PE/SFCP/AFC）；VOOC 保留驱动功能、不提供菜单开关。启动和离线后恢复应用全启用基线，菜单变化经 800 ms 防抖下发。UI 只读镜像。

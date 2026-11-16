@@ -42,8 +42,11 @@
 | `PD_Init()` / `PD_Task(now_ms)` | 初始化与每轮调度 |
 | `PD_SetVbusMillivolts(mv)` | 由 VBUS 任务喂入实测输入电压,参与掉线判断 |
 | `PD_IsConnected()` / `PD_IsPowerReady()` | 连接状态与供电就绪状态 |
-| `PD_IsEPRContractActive()` | EPR 合同是否生效 |
+| `PD_IsEPRContractActive()` / `PD_IsPPSContractActive()` | 实际 EPR / PPS 合同是否生效 |
 | `PD_GetContractVoltageMv()` / `PD_GetContractCurrentMa()` | 当前合同电压/电流 |
+| `PD_GetRequestedPDOIndex()` | 1-based RDO 位置，供已 ready 的系统数据页 |
+| `PD_WantsFastPoll()` | 已连接或 PHY 忙时不进入 WFI |
+| `PD_ShouldDeferUI()` | 已发布 RX/Hard Reset、自动 GoodCRC/TX、非 IDLE、EPR 过渡/ACK 等待、PPS 刷新前 50 ms，暂缓普通帧 |
 | `PD_GetDisplayPDOs()` | 供 UI 展示的 PDO 快照(按 AVS > EPR Fixed > PPS > SPR 排序) |
 
 ## 时序硬规则(必须保留)
@@ -54,6 +57,12 @@
    ——`PD_Port_RxStart()` 已按 PHY 状态自我门控;
 3. 所有 PHY 忙等必须有界(TX_END 2 ms),超时把 PHY 清回 RX 并计入 `PhyDiag.tx_end_timeouts`;
 4. 本板由 VBUS 供电,因此本地协议恢复默认**不主动发送 Hard Reset**(避免 Source 关闭 VBUS 导致 MCU 掉电)。
+
+## 当前调度与显示
+
+接收优先：Hard Reset 优先，已发布的 RX 先进入报文处理，随后下一轮按新状态判断超时；仍有 IRQ 竞争窗口，不保证找回未收到的报文。与启动 1000 ms quiet 不同，普通 PD UI gate 只暂停帧，按键与遥测继续；PPS 旧合同 ready 时也可让行。保持 8 s 刷新、EPR 375 ms KeepAlive、不主动 Hard Reset（VBUS 供电）策略。Dashboard 顶栏按 UVP → 未连接 DC → 未 ready NEG → EPR → PPS → SPR 分类，Statistics 按实际合同分类（不把源端能力当合同）。
+
+用户在后续固件反馈 PD 目前还算稳定；具体源、负载、连续时长未完整记录，不视为所有兼容性问题解决。以下日志/抓包与历史 A/B 是当时版本记录，当前源码据此保留修订。
 
 ## 抓包参考(`captures/`)
 

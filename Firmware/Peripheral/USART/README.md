@@ -11,3 +11,5 @@
   `CNTR` 推导生产者位置;
 - `printf()` 经 `Project/Debug/debug.c` 重定向到本模块;SDI 未参与编译;
 - TX 背压是有界的:即使 DMA 通道异常,也不会永久卡死 coroOS。
+
+TX/RX 具体接口见 usart_async.h。常规发送可查询 pending/busy/dropped；接收可查询 available/overrun。正常主循环不依赖 USART 轮询完成 DMA，日志分组见 [固件总览](../../README.md)。HardFault 使用独立有界 USART 寄存器写入，不依赖 DMA/printf。

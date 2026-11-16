@@ -1,280 +1,112 @@
-# 固件(Firmware)
+# 固件（Firmware）
 
-本目录沿用 `CH32X035_DemoBoard` 已验证的分层组织,但全部引脚/器件映射都基于本板自己的网表。
+DPC27A Desktop PD Power Converter 的 CH32X035C8T6 固件。采用无 RTOS 的 coroOS 协作式调度、USB-PD Sink 策略、独立快充控制器与 128×80 双语 OLED 界面。本文以当前源码为准；开发期间的实验、旧配置和实测记录见模块文档及 Git 历史。
+
+## 构建与烧录
+
+- 使用 MounRiver Studio II 打开本目录的 `Desktop_PD_Power_Converter.wvproj`（工程配置 `.project/.cproject`）。当前按体积优化（-Os，`-flto=auto`），不建议随意关闭 LTO。
+- [链接脚本](Project/Ld/Link.ld) 配置 62 KiB Flash（63,488 B）、20 KiB RAM，栈预留 2 KiB。系统主频 48 MHz；构建产物位于 `Project/obj/`。
+- 更换字体、编译宏或工具链后 Clean Build；检查 MAP/ELF 的 Flash/RAM、栈和库符号。System → Reboot to ISP（重启至ISP模式）进入 WCH 出厂 ISP；Reset Now 仅软件复位。
+- 本次审查没有新的目标 MAP/ELF 或完整台架验收数据，不以估算替代实测占用。
 
 ## 目录结构
 
-```text
-APP/                 入口、任务注册 + MiaoUI + 页面函数
-  Services/          输出侧策略模块:总功率限制(`power_limit.c/.h`)、功率分配(`power_alloc.c/.h`)、风扇曲线(`fan_control.c/.h`)
-  framework/         低功耗状态机与 UI_OFF 休眠(`pm_*.c/.h`,含 Sleep 菜单)
-  MiaoUI/            精简菜单/UI 移植,ASCII/中文子集字体 + XBM 图标(仪表盘/Settings 子页/Statistics/关于/烧屏/恐龙)
-  Pages/             页面函数(Dashboard 仪表盘、`port_pages.c` 端口协议页、服务页、`game_dinosaur.c` 小游戏)
-BSP/                 板级启动 + 器件驱动
-  SW3538/            硬件 I2C 双口快充控制器驱动
-  SW3526/            句柄式双实例快充控制器驱动
-  VBUS/              PA7 ADC 输入母线电压检测
-  Fan/               PB9 / TIM1_CH1 187.5 kHz PWM 风扇调速
-  Buttons/           K1/K2 低有效按键消抖/输入状态机
-  Display/           SH1107 传输层 + DMA 完成中断整帧刷屏
-Peripheral/PD/       USB-PD Sink 策略(PPS 优先 / PD3.1 EPR)与 PHY 后端
-Peripheral/I2C/      PA13/PA14 I2C1 中断驱动事务引擎 + 看门狗恢复
-Peripheral/SoftI2C/  句柄式协作 GPIO-I2C 引擎(供 SW3526 使用)
-Peripheral/Time/     SysTick 自由运行µs计数器 + 1 ms 节拍中断
-Peripheral/USART/    USART1 DMA 异步控制台
-Peripheral/SPI/      重映射 SPI1 TX + DMA1 CH3 完成中断(硬件 NSS 片选)
-ThirdParty/u8g2/     精简 u8g2 核心 + SH1107 TK078F288 后端
-Project/Core/        WCH 器件库/SPL 与 system 文件
-Project/Debug/       自研整数 printf + rand/sbrk/延时兼容层
-Project/Scheduler/   coroOS
-Project/Startup/     启动汇编
-Project/Ld/          链接脚本(完整 20 KiB CPU RAM)
-Project/obj/         构建产物(除 `.gitkeep` 外被忽略)
-```
+| 路径 | 职责 |
+|---|---|
+| APP/ | main、任务、IRQ、i18n；MiaoUI 菜单、Pages 页面 |
+| APP/Services/ | 总功率限制、分配算法、风扇曲线 |
+| APP/framework/ | UI_OFF 休眠状态机、计时器、设备钩子 |
+| BSP/ | 板级初始化、SW3538、双 SW3526、GX21M15U、VBUS ADC、按键、风扇、SH1107 |
+| Peripheral/ | PD、硬件/软件 I²C、SysTick、SPI DMA、USART DMA |
+| ThirdParty/u8g2/ | 精简图形库及 SH1107 后端 |
+| Project/ | WCH SPL、启动/链接、整数 printf、coroOS、构建输出 |
 
-## 协作式任务总览(`APP/app_tasks.c`)
+## 硬件映射
 
-| 任务 | 周期 | 职责 |
+| 模块 | 资源 |
+|---|---|
+| USB-PD Sink | USBPD、CC1/CC2 |
+| VBUS | PA7 ADC |
+| I2C1 | PA13 SCL / PA14 SDA，400 kHz；SW3538 0x3C、GX21M15U 0x4F |
+| 软件 I²C | SW3526 #1 PA4 SCL / PA3 SDA；#2 PA1 SCL / PA2 SDA，各 0x3C |
+| OLED SPI1 | PA11 SCK、PA10 MOSI、PA12 NSS、PA9 D/C；12 MHz，DMA1 CH3 |
+| USART1 | PB10 TX / PB11 RX，921600 baud，DMA1 CH4/5，收发各 256 B |
+| I2C1 DMA | DMA1 CH6 TX / CH7 RX |
+| K1 / K2 | PA5 / PA6，内部上拉、低有效 |
+| 风扇 | PB9 / TIM1_CH1，187.5 kHz，8 bit duty 0–255 |
+
+## 协作式任务（APP/app_tasks.c）
+
+按注册顺序：
+
+| 任务 | 目标间隔 | 职责 |
 |---|---|---|
-| `thread_pd` | 每轮 | USB-PD 协议/策略推进 |
-| `thread_vbus` | 20 ms | PA7 采样输入母线电压并喂给 PD 策略 |
-| `thread_ui` | 绘制 6 ms / 扫描 8 ms | 启动即点亮屏幕并进入 Dashboard 仪表盘(与 PD 状态无关);按键扫描 + MiaoUI 主循环 |
-| `thread_soft_i2c_service` | 每轮 | 两路软件 I2C 各推进一步 |
-| `thread_i2c_watchdog` | 10 ms | I2C 事务超时检测与总线恢复 |
-| `thread_power_mirror` | 333 ms（轮后延时） | SW3538 + 两个 SW3526 的状态/ADC 镜像刷新,并把总功率限制分配给各芯片功率上限 |
-| `thread_gx21m15` | 500 ms（轮后延时） | GX21M15U 温度镜像刷新 |
-| `thread_fan` | 500 ms | 自动风扇调速:UVP 停转 / 传感器失效全速 / 40(37)°C 迟滞 + 每 °C +2 |
-| `thread_pm` | 50 ms | 低功耗状态机:`APP/framework`,空闲 1 min → UI_OFF 关屏;按键/插拔/>5 W 唤醒 |
+| thread_pd | 每轮 | PD 策略及协议 |
+| thread_vbus | 20 ms | 采样 VBUS，提交 PD 掉线判断 |
+| thread_soft_i2c_service | 每轮 | 两路软件 I²C 边沿 |
+| thread_ui | 派发 2 ms；按键 8 ms；帧 6 ms | OLED 初始化、按键、Statistics 与 UI |
+| thread_i2c_watchdog | 10 ms | 硬件 I²C 看门狗/恢复 |
+| thread_power_mirror | 轮后 333 ms | 三颗快充芯片状态/ADC、协议配置、功率分配 |
+| thread_gx21m15 | 轮后 500 ms | 数字温度镜像 |
+| thread_fan | 500 ms | 自动风扇 |
+| thread_pm | 50 ms | UI_OFF、功率和插拔唤醒 |
 
-> SPI 显示与硬件 I2C 事务完全由中断推进(DMA1 CH3 / I2C1 EV+ER / DMA1 CH6+CH7),
-> 不再占用调度器线程;无栈协程不保存自动局部变量,
-> 凡是在 `THRD_DELAY` / `THRD_YIELD` 之后还要用的数据,必须放在 static 存储或器件句柄里。
->
-> 主循环每轮在 `APP_Tasks_RunOnce()` 之后调用 `APP_Tasks_Idle()`:没有需要全速推进的软件状态机时
-> 执行 `WFI` 休眠,由 **1 ms SysTick 节拍**或任意外设中断唤醒。两种情况下保持全速轮询:
-> 软件 I2C 传输进行中(边沿由调度器逐轮推进,休眠会把单字节拖慢两个数量级),
-> 以及 `PD_WantsFastPoll()`(PD 已 attach:Source_Capabilities → Request 的响应延迟必须留在
-> Source 的 ~24 ms 窗口内;实测 1 ms 休眠粒度会把 5 ms 拉长到 ~31 ms,Source 直接不回 GoodCRC)。
->
-> 看门狗:`APP_Tasks_Init()` 末尾使能 IWDG(LSI,约 1–3 s),仅在 `APP_Tasks_Idle()` 每轮刷新;
-> 诊断构建(`DPC_DIAGNOSTICS_ENABLE=1`)可从下次启动的 `[RESET] cause: … IWDG` 确认卡死复位；默认精简构建不输出该行。
+以上为协作式目标间隔，不是硬实时保证；轮后延时另含 I/O 时间。无栈协程跨 THRD_DELAY/YIELD/SPAWN 存活的变量必须为 static 或句柄成员。
 
-## 中断与 VTF
+- OLED 上电约 200 ms 后等待软件 I²C 空闲再初始化；不能用阻塞延时饿死 PD。
+- 上电后最初 1000 ms 内若 PD 已连接但未 ready，普通 UI/遥测暂缓；未连接或合同就绪时解除该启动限制。
+- 普通 UI 帧额外在软件 I²C ACTIVE、PD_ShouldDeferUI()（PD 交易、PHY 事件、EPR 维护、PPS 刷新前 50 ms）及 UI_OFF/唤醒静默时让行。普通 PD 帧让行不停止按键采集或遥测；启动 quiet 和休眠则清理输入事件。无补帧突发。
+- 主循环在没有软件 I²C 活动且 PD_WantsFastPoll() 为假时 WFI，否则全速轮询；SysTick 1 ms 节拍/外设中断唤醒。IWDG 在初始化末尾开启，idle 钩子每轮喂狗。
 
-- **抢占级 0(唯一)**:`USBPD` —— 可打断其它任何 ISR,GoodCRC 路径不被批量传输阻塞;
-- **抢占级 1**:SPI TX DMA1_CH3、USART TX/RX DMA1_CH4/5、I2C1 EV+ER、I2C TX/RX
-  DMA1_CH6/7、SysTick —— 同级互不抢占;**最坏嵌套 2 级**(DMA ← USBPD),
-  正好为 V4C 的两级硬件压栈;全部 ISR 以 `WCH-Interrupt-fast` 声明;
-- **VTF 免表入口**:VTF0=USBPD、VTF1=USART TX、VTF2=USART RX、VTF3=SPI TX;
-- 单点维护:`APP/ch32x035_it.c` 的 `APP_IRQ_Init()` 持有优先级总表与 VTF 映射,
-  由 `main()` 在启动早期调用;**新增外设中断必须注册进该表**(IPRIOR 复位值 0x00
-  会把它误落在 USBPD 同级,拖慢 PD 响应)。
+### IRQ 优先级
 
-## 电源控制器驱动现状
+USBPD 唯一抢占级 0，SPI/USART/I²C DMA、I²C EV/ER、SysTick 为抢占级 1，正常外设最坏两级嵌套。VTF0=USBPD、VTF1=USART TX、VTF2=USART RX、VTF3=SPI TX。统一在 APP/ch32x035_it.c 的 APP_IRQ_Init() 管理，保持 PD 最高优先级。
 
-- SW3538 通过 `Peripheral/I2C` 共享硬件 I2C1;驱动提供协议解码、端口/在线状态以及
-  VIN/VOUT/双路端口电流 ADC 镜像。
-- 每颗 SW3526 各自拥有独立的 `SoftI2C_Handle`,因此两个固定地址 `0x3c` 的器件
-  可以同时使用,不依赖全局驱动状态。
-- 器件 API 遵循 SW6306 命名惯例:`STRG` 表示状态/回读,`CTRG` 表示控制/配置;
-  协程式 load 函数把解码后的状态缓存在句柄中。
-- 在状态/遥测之外,驱动现提供协议使能掩码(`*_SetProtocolMask`)、功率上限
-  (`*_SetPowerLimitW`)与保护状态读取;UI 端口协议页的改动经 `APP_PortProtocol_Touch()`
-  防抖 800 ms,由 `thread_power_mirror` 执行写入(UI 永不直接触碰总线;掩码写会使
-  在线设备重新协商)。SW3526 的 VOOC 位保留在驱动内,但不在 UI 提供开关。
+## 输入与输出功率策略
 
-`Board_RebootToISP()` 选择 CH32X035 出厂 BOOT 区并执行软复位,是应用层进入
-WCH ISP 模式的接口。
+- PD Sink：优先选择 >20 V 的 PPS（目标上限 21 V、6.35 A 编码上限），否则最高不超过 20 V 的 SPR Fixed；EPR 标称 28 V/5 A，内部策略允许广告范围内的非标 Fixed ≤32 V / ≤7 A。非标申请并非产品额定功率保证。PPS 每 8 s 刷新，EPR KeepAlive 375 ms；详见 [PD 策略](Peripheral/PD/README.md)。
+- 总功率预算：VBUS <8 V 为 0 W；PD 输入按合同整瓦功率的 95% 向下取整，合同电压/电流无效时为 0；DC 默认 270 W，Dashboard K1 每次减 10 W，60 W 后回到 270 W。
+- 分配：设预算 B、各芯片测得整瓦功率 P_i、其它芯片总功率 others，则本芯片目标 min(cap_i,max(0,B-others))；cap 分别 140/65/65 W，未连接负载按 0 W。API 下发范围分别 18–140、12–71 W（SW3526 产品目标上限仍为 65 W）。这是各自可用上限，不是三个互斥预留份额，空载上限之和可能超过 B；亦非瞬时硬件总功率保护。UVP 预算为零仍受 API 最小值限制。
+- SW3538 管理 TypeA+C 共享 VOUT；SW3526 各管理一个 Type-C。协议页提交掩码，800 ms 防抖后由电源镜像协程写入；启动及控制器离线恢复重新建立全使能基线，SW3538 两路快充通路同时使能。UI 不直接读写 I²C。
 
-被移除的参考模块不是占位符:INA226、SSD1306、WS2812 与 PIOC 仍然不存在。
-u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SSD1306/I2C 传输层。
+## 显示、菜单与温控
 
-## 风扇 PWM 与 SH1107 显示
+- SH1107 原生 80×128、逻辑 128×80，默认 R1，反向 R3，外部 VPP，内部电荷泵关闭。u8g2 1280 B 全帧缓冲加 1280 B DMA 快照；16 页 DMA 链，忙时合并中间帧。
+- 启动进入 Dashboard；菜单根页 Dashboard / Settings / Statistics（系统数据）/ Dino Game / About；Settings 内含返回、Display、TypeA+C、TypeC1、TypeC2、System。默认简体中文，System 的 Language 开关可切英文；设置 RAM-only。
+- Dashboard 始终 ASCII：首行温度、整数 VBUS、Wmax、UVP/NEG/EPR/PPS/SPR/DC；其下三列 TypeA+C / TypeC1 / TypeC2，输出 V（2 位）、A（3 位）、W（≥10 W 两位，否则三位）、协议。离线为 ---，无负载 NC，无快充 5V。数值 6 px 等宽、右对齐，内容或面板归属变化才提交帧。
+- Statistics 每 200 ms 最多更新一次，6 项只读镜像：PDO（DC/NEG/SPR/PPS/EPR）、Req(V)、Cur(A)、VBUS(V)、Temp#1(C)、Temp#2(C)；合同未就绪/温度失效用 --，超宽数值用 OVF。
+- 温度 #1 GX21M15U，#2 SW3538 外接 NTC；System 独立开关默认均启用。控制温度为有效且启用源的均值或唯一有效源；均不可用时 Dashboard 显示 --.-C，风扇全速（UVP 优先停转）。Statistics 独立显示两个有效原始镜像。
+- 风扇 40 °C 启动、37 °C 停止，运行最小 duty 80；每升高 1 °C +2，最大 255。Fan +10'C 将两个温度点整体上移 10 °C。
+- 自动休眠默认 1 min，Display → Sleep Options 可调；Keep On >5W 默认开，仅冻结自动倒计时。根菜单长按 K2 手动关屏，不停止 PD/遥测/风扇。新按键、PD/VBUS/端口插拔、功率跨 5 W 或相对基准累计变化 ≥2 W 唤醒；稳定大功率不反复唤醒手动关屏。
+- K1=DOWN（导航/递增/跳跃；DC Dashboard 减功率）；K2 短按松开确认，约 800 ms 长按 BACK，一次触发。详见 [MiaoUI](APP/MiaoUI/README.md) 与 [低功耗框架](APP/framework/README.md)。
 
-- PB9 使用原生 TIM1_CH1 输出 187.5 kHz PWM。PSC=0、ARR=255 使 CCR1 与 8 位占空比
-  一一对应(0..255 共 256 级);`FAN_PWM_SetDuty8()` 即该量程的唯一接口。
-- 转速由 `thread_fan` 按 `Services/fan_control.c` 的曲线自动控制:UVP 停转、两路启用且有效的温度融合、无可用源
-  全速,平时 40 °C 启动 / 37 °C 停止,之后每升高 1 °C 占空比 +2(启动点 80,静音直跳)。
-- SH1107 使用 SPI1 重映射 10:PA11 SCK、PA10 MOSI、PA12(硬件 NSS 片选)、PA9 D/C。
-  SPI 时钟 12 MHz,SPI TX 使用 DMA1 CH3,整帧分页由 DMA 完成中断推进。
-- 0.78 英寸面板由 TK078F288 80×128 原生 u8g2 后端驱动。`U8G2_R1` 得到产品需要的
-  128×80 横屏画布;`U8G2_R3` 是反向横屏,`Disp_SetRotationMode()` 保留 R0..R3
-  供台面方向测试。
-- VPP 由外部提供。屏幕初始化发送 `0xAD,0x8A`,保持 SH1107 内部 DC-DC/电荷泵关闭。
-- u8g2 占用一块 1280 字节全帧缓冲,中断驱动传输层另有一块 1280 字节 DMA 快照;
-  帧按 page 分批发运,像素数据传输期间不会长时间占住前台调度器。
-- MiaoUI 保留剪裁窗口、圆角矩形/框、XBM 图片、圆/线图元和文本渲染;
-  当前只链接 `font_fusion_pixel_p12_zhcn` 一个中英文比例字库。
-- 首屏是 **Dashboard 仪表盘函数页**(见下)。主图标菜单顺序为
-  Dashboard / Settings / Statistics / Dino Game / About；
-  Settings 图标子菜单依次为返回、Display、TypeA+C、TypeC1、TypeC2、System；Display 复用 `img_burn_in`，System 保留 `img_configuration`。Statistics 提供 PD 档位、电压/电流、VBUS 与 Temp#1/Temp#2 温度。
-  仪表盘与其它全屏页一样都只是被菜单调用的绘制函数;仪表盘上导航键
-  被忽略,按 K2(ENTER,松开触发)返回图标菜单,长按 K2=BACK 同样返回。
-  K1=DOWN,K2=ENTER(长按=BACK:子页回上级、根菜单立即休眠),两路 GPIO 使用内部
-  上拉、电气低有效,沿用原有消抖/长按状态机。
+## Flash 约束与调试日志
 
-## 开机仪表盘(Dashboard)
+- 唯一字库 font_fusion_pixel_p12_zhcn：209 字形、4,218 B（95 个 h12w6 等宽 ASCII、114 个 Fusion Pixel / Ark Pixel 汉字）。为数组源码大小，不是总 Flash 实测。扩充方式见 [I18N](APP/I18N.md)。
+- 纯整数 printf（Project/Debug/debug.c），支持 %% %d %i %u %x %X %c %s 与 0/-/宽度；l/ll 按 32 位处理，单条上限 127 字符。不用 %f/软浮点、newlib malloc/assert/fprintf；随机数使用工程自带 rand/srand。UI 定点显示 UI_DATA_FIXED/UI_FmtScaled，动画 Q10。
+- TIME_Micros() 保持硬件 64 位自由运行计数，用 32 位分段除法计算低 32 位微秒；不从低位 ticks 直接除。约 71.58 min 微秒回绕，须以 MAP 核对库辅助是否被剔除。
 
-`MiaoUi_Setup()` 把首项 `-Dashboard` 直接置为运行态,所以上电后不再先画图标菜单,
-而是进入 128×80 全屏遥测页(`Dashboard_Page()`,位于 `APP/Pages/dashboard.c`):
+日志宏在 [APP/main.h](APP/main.h)，相互独立，修改后 Clean Build：
 
-```text
---.-C 20V 270Wmax DC         <- 温度(所选有效温度融合,无可用时占位;如 25.3C) / 输入电压(整数伏) / 总功率限制 / PD 状态(右对齐)
-      A+C       C1      C2 <- 第二行:各块端口名
-   20.00V   20.00V   20.00V <- 第三行:输出电压(两位小数)
-   1.250A   0.500A   0.000A <- 第四行:输出电流(三位小数)
-   25.00W   10.00W    0.00W <- 第五行:输出功率(>=10 W 两位小数,<10 W 三位小数)
-      PPS        PD       NC <- 第六行:协商协议(NC 无设备 / 5V 无快充;居中)
-```
+| 宏 | 默认 | 功能 |
+|---|---:|---|
+| DPC_DIAGNOSTICS_ENABLE | 0 | 详细 PD PDO/PHY、周期性 VBUS/PM、OLED/CFG |
+| DPC_LOG_STARTUP_ENABLE | 1 | 启动、复位原因、时钟及总线 |
+| DPC_LOG_POWER_ALLOC_ENABLE | 1 | 功率上限下发后变化日志 |
+| DPC_LOG_FAN_CHANGE_ENABLE | 1 | 风扇初始/档位变化 |
 
-- 行高 12 px + 1 px 间隔:行基线 `y = 12 + 13*(行-1)`;列右边界 43/85/127 px,
-  数值右对齐 —— 偏宽的数值占用 1 字符间隙,SW3538 列 7 字符可容下 `139.02W`。
-- **总功率限制**(`Services/power_limit.c`):UVP(输入 < 8 V)固定 `0 W`;PD 固定为合同
-  功率的 95%;DC 下按 DOWN 调节,上电默认 `270 W`(最大值),每次 -10 W,到
-  `60 W` 后回绕到 `270 W`。该值由 `thread_power_mirror` 用于芯片功率分配;
-  第一行显示为 `270Wmax`(数字 3 位右对齐,`W` 与旧 `140Wmax` 同一位置)。
-- PD 状态栏:输入 < 8 V 显示 `UVP`;否则 `EPR/SPR/NEG/DC`(PD 未连接 = `DC`)。
-- 第一行大约 21 字符:温度丢 `'`、电压取整就是为了在 `UVP`/`EPR`(3 字符)时
-  也不溢出(22 字符会被屏幕右边缘截掉最后一字)。
-- 数据全部取自器件镜像(功率 333 ms 延时,GX21M15 温度 500 ms 延时),UI 不做 I2C 访问:
-  SW3538 列 = 共享 VOUT + A/C 两路电流之和 + 芯片协议;
-  两个 SW3526 列 = 各自的 VOUT/IOUT/协议。芯片离线时该列显示 `---`;
-  协议行:未接设备 `NC`、接了但无快充 `5V`,其余显示协议名,文本在列内居中
-  (SW3538 列右移 3 px);第 1 行的 PD 状态右对齐到屏幕右缘。
-- 数值用**定点整数**格式化：真实值 = 缩放整数 / 10^decimals（`%u.%02uV` 这种写法），
-  **禁止 `%f`** —— 见下方「Flash 约束与 printf 规则」；
-  内容签名不变就不重复刷屏,但 `Disp_GetFlushCount()` 一旦变化(菜单/fade 刷过帧)
-  就强制重发本页——只看内容签名会在“退出菜单再进入”时漏帧。
+精简 PD 合同、连接、超时与恢复事件仍输出，不是全局静音。I²C 临时首故障/快照宏和串口报告已删除；需对照历史诊断提交，而非启用无效宏。
 
-## Flash 约束与 printf 规则(2026-09-12 定下)
+## 验证与历史记录
 
-- **不要用 `%f` / `float` / `double`**。本板无 FPU，软浮点库全套约 8.7 KiB；
-  浮点显示统一用定点整数：`snprintf(buf, n, "%u.%02uV", mv/1000u, (mv%1000u)/10u)`；
-  MiaoUI 数据项用 `UI_DATA_FIXED`（兼容 `UI_DATA_FLOAT`）（`ptr` 指向缩放整数，`decimals` 为显示小数位），
-  渲染走 `UI_FmtScaled()`。
-- **printf 是本工程自带的**（`Project/Debug/debug.c`）：纯整数格式化，支持
-  `%% %d %i %u %x %X %c %s` + `'0'`/`'-'`/宽度；`l`/`ll` 修饰被接受但按 32 位处理
-  （不要用它打印 64 位值）；单条输出上限 127 字符，超长会被截断。
-- **不要调用 newlib 的 `rand()`/`assert()`/`malloc()`/`fprintf()`**：
-  `rand()` 会拖进 assert→fprintf→reent stdio→malloc 整条链（实测 ~4.5 KiB）；
-  随机数请用自带的 xorshift（`rand()` 已在本工程重实现，直接用即可）。
-- MiaoUI 动画/PID 是 **Q10 定点**（`UI_FX()/UI_FXI()`，`ui_conf.h`）：
-  调用 `UI_Animation()` 传值/取值都要带 `UI_FX()`，真正画图时再 `UI_FXI()` 转回像素；
-  `kp/ki/kd` 也按 Q10 填（0.25 → 256）。
-- 改完请用 map 复核：库占用（`_`/`__` 开头符号）应只剩 `_write`/`_sbrk` 与少量
-  libgcc 移位辅助。
-
-
-## 串口输出与故障诊断预编译开关（2026-11-14）
-
-开关集中位于 [`APP/main.h`](APP/main.h)。普通构建默认**保留三类实用日志**，但关闭详细运行日志：
-
-```c
-#define DPC_DIAGNOSTICS_ENABLE       0
-#define DPC_LOG_STARTUP_ENABLE       1
-#define DPC_LOG_POWER_ALLOC_ENABLE   1
-#define DPC_LOG_FAN_CHANGE_ENABLE    1
-```
-
-各宏均相互独立，且只接受 `0` / `1`。修改后必须执行 **Clean Build**，尤其是 `APP/app_tasks.c` 和 `Peripheral/I2C/i2c_api.c` 及包含 `main.h` 的文件，避免旧目标文件混用。
-
-| 宏 | 默认 | 控制范围 |
-|---|---|---|
-| `DPC_DIAGNOSTICS_ENABLE` | **0** | 额外的每秒 VBUS/PM、OLED 就绪、端口协议配置 `[CFG]`、PD 报文/PDO/PHY 详细诊断 |
-| `DPC_LOG_STARTUP_ENABLE` | **1** | 启动标题、`[RESET]` 复位原因、主频/ChipID、UART/SPI/风扇 PWM/I²C/Soft-I²C 信息及 PD 输入策略参数 |
-| `DPC_LOG_POWER_ALLOC_ENABLE` | **1** | `[PWR]` 功率分配变更：仅当对至少一颗在线芯片实际下发新的功率限制后打印一次；不按轮询周期重复打印未变化的结果 |
-| `DPC_LOG_FAN_CHANGE_ENABLE` | **1** | `[FAN]` 风扇 PWM 档位变更：只有初始应用或 PWM 值变化时打印温度、在线状态、UVP 和新档位；不按 500 ms 周期重复打印相同档位 |
-
-例如默认构建会输出 `[RESET]`、`[PWR]` 和 `[FAN]`，但不会输出周期性 `[VBUS]` / `[PM]`；设置 `DPC_DIAGNOSTICS_ENABLE=1` 只会额外打开详细诊断，**不会改变上述三个独立宏的取值**。关闭启动、功率或风扇日志时只需单独把对应宏设为 `0`。
-
-这些宏**不是全固件的串口静音总开关**：精简 PD 连接、合同、重置、回退和故障事件仍默认输出，详细 PDO/PHY/协商过程由主开关控制。功率分配/风扇的实际运算和执行不依赖日志开关。各配置的 Flash/RAM 消耗以相同工具链生成的 `.map` 为准。
-
-### 硬件 I²C 修订后的实测与日志清理（2026-11-15）
-
-用户反馈：在提交 `9611c8c`、旧 master/snapshot/periodic/first-fault 四项均为 0 的构建中，SW3538 与 GX21M15U 数据正常，无异常输出或无法读取现象。该反馈支持驱动修订有效，但未提供长时间压力测试结果，亦不能证明唯一根因。历史诊断记录保留在 [I²C 文档](Peripheral/I2C/README.md)。
-
-本轮退役临时诊断：删除三个实验宏、I²C 首故障锁存、扩展快照及 `[I2C]`/`[I2C0]` 打印。常用启动/功率/风扇日志与原详细日志主开关保留。看门狗、STOP 握手、错误处理、PFIC 中断保护、DMA 与内存屏障保持实测基线的精简路径；保留必要的 MMIO 读取。旧实验宏不再有效。清理后的源码仍需 Clean Build 与板端复测。
-
-### I²C 修复笔记（2026-11-15）
-
-- 现象：关闭详细诊断和首故障锁存时 SW3538 与 GX21M15U 频繁离线，开启后变稳。两份 ELF/MAP 确认实际参与 -Os/-flto；全局去 LTO 链接曾溢出 668 B，不能将 LTO 直接认定为根因。
-- 失败 ELF 硬件断点 0x5982 捕获看门狗时间差 131 ms（4933→5064），状态 WAIT_ADDR_TX、owner=SW3538、地址 0x3C、TX=40 05，CTLR1=0401、CTLR2=0330、STAR1=STAR2=0，DMA6/7 尚未进入本次传输。该次为真实状态停滞而非时间差下溢，软件 active 与硬件空闲失步；调试器读取状态寄存器可能有副作用。
-- 修订 `9611c8c`：一次正常事务只请求一次 STOP，避免对自清 START/STOP 位读改写；确认 STOP/START/BUSY/MSL 均清零再发布成功，保持 tBUF=2 us；DMA 接管前关 EV、先配置通道再释放 ADDR，检查异常/丢失主机身份；前台看门狗用 I²C 专属 IRQ 保护、重新采样时间与状态，使用有符号模差并添加内存屏障。保留 400 kHz、USBPD 高优先级、DMA 通道与恢复机制。
-- 用户反馈：全部诊断关闭后两设备均正常，随后 `3c90fbb` 清理临时诊断。实测支持组合修复有效，未证明 STOP 为唯一根因；不再依赖诊断代码改变时序。详细历史见 [I²C 驱动笔记](Peripheral/I2C/README.md)。
-
-### 历史 Flash 容量基线
-
-关闭诊断锁存的历史 MAP（`Desktop_PD_Power_Converter(1).map`，对应无编号 ELF，修复前，-Os/-flto=auto）显示：Flash 62 KiB，.text 58,424 B（机器指令约 47,170 B、只读资源 11,249 B、对齐 5 B），.init/.vector 256 B、.data 156 B，合计 58,836 B，剩余 4,652 B；.bss 11,340 B、.noinit 4 B、栈 2,048 B，计入对齐后 RAM 13,552 B。LTO 合并字符串池 6,448 B，其中明显带 [PD] 前缀的字符串至少 2,668 B；字体 font_menu_main_h12w6 1,200 B，10 个菜单图标 1,200 B，恐龙游戏独立图像资源 928 B。以上不是新固件的测量；未通过本轮源码清理承诺节省量。
-
-### Flash 优化与中文化预备
-
-- PD 详细日志改为主诊断宏控制，默认保留简短事件，协议状态机及 PHY 不改。源码直接 printf 格式串（去重含 NUL，未计共享/合并）由 3235 B 降至 529 B（保守统计跨条件编译的分支，非实际链接结果）。最终以同配置 Clean Build 的 MAP 为准。
-- [APP/I18N.md](APP/I18N.md)：英文原文为键的翻译清单与字库估算，当前 80 项、97 个去重汉字，尚未接入运行时。
-
-### 2026-11-15：遥测与 UI 刷新、双温度
-
-- 电源镜像从原每轮 I/O 后延时 333 ms 改为 500 ms 起始目标周期（I/O耗时计入；过载/PD quiet 时不保证每 500 ms 都能拿到新样本），GX21M15U 同样按起始周期 500 ms；功率分配与协议配置沿用此任务。UI 帧延时 8→6 ms，键盘保持独立 10 ms 时基，游戏 16 ms 模拟周期不变，老化测试说明改为真实时间 2400 ms。
-- SW3538 ADCLoad 新增 NTC 通道与前后电流档位校验，26 项整数表 52 B；Statistics 每 200 ms 只读镜像，追加 GX21M15、SW3538 两行（超出屏幕可滚动），不新增 UI I²C 事务；风扇反馈仍只使用 GX21M15U。详见 [SW3538 驱动](BSP/SW3538/README.md)。
-- 新功能仅源码及曲线数值验证，尚未目标编译和板端复测。
-
-### 2026-11-15：恢复采样间隔、独立输入时基和数值栏
-
-- 恢复 `d1c10a5` 前的采样调度：SW3538/双 SW3526 每轮完成后 `THRD_DELAY(333)`，GX21M15 每轮完成后 `THRD_DELAY(500)`；SW3538 NTC 新功能保留，随电源镜像采样。不是固定起始周期；实际采样间隔另含 I/O 耗时。
-- UI 仍以 6 ms 为目标绘制间隔，输入以 8 ms 为目标扫描间隔；协程 2 ms 派发，按时间分别调度，迟到仅有限补计数而不补造 GPIO 采样。消抖/长按/K1 DAS/K2 DAS 为 16/800/96/128 ms，连击窗口 400 ms（名义值）；拆分消抖与长按/DAS 计数器，避免释放抖动重置长按时间。
-- 输入适配仅在有效扫描后入队，每个动作消费一次，4 项队列满优先保留 ENTER/BACK；INIT/EXIT 不抢消费，休眠、唤醒静默期和 PD quiet 清队列/手势，未看到按下的释放不确认。
-- Statistics 用 6 个只读 INT/FIXED 数值及有效标志，标签和单位在左，右侧右对齐。不使用整行运行时字符串；通用整数格式器处理 0~3 位小数、负零附近值、INT32_MIN、无效值 `--`、超宽 `OVF`。RW 弹窗共享格式器，保留原 `UI_DATA_FLOAT` 枚举别名和 STRING/SWITCH 行为；只读项 ENTER 不进入弹窗。
-- 此轮未目标构建/板测，不改变 I²C、PD、风扇和 NTC 换算实现；按键在协作式任务被阻塞期间仍可能错过完整物理脉冲。实际 Flash 和 GUI 帧率以实测为准。
-
-### 2026-11-15：Flash 实测反馈与 UI 对齐
-
-用户反馈中文化前 text=54,996 B、data=76 B（合计55,072 B），62 KiB Flash 名义剩余8,416 B；未提供新 MAP，不能精确确认其他段/对齐。UI_DATA_SWITCH 边框及填充统一右对齐数值栏，Dashboard 自绘页面及共用顶栏固定 ASCII/原字体，不纳入未来 i18n；菜单入口仍可翻译。此次仅布局与文档修改，未启用中文化；目标编译和板端验证待完成。
-
-### 2026-11-15：软件 I²C 与 UI 加速偶发离线
-
-用户报告 UI 加速后两路 SW3526 偶尔整列 `---`，发生早于按键时基调整。修正 SoftI2C 实际 SCL 释放后的拉伸计时、边沿时间戳、STOP/恢复检查，普通 UI 绘制避开在途软件 I²C 事务；不降低扫描速度，不改遥测周期、硬件 I²C、PD 或功率策略。历史诊断版本曾增加每路 RAM 故障记录（已退役），无打印、无离线滤波。详见 [SoftI2C 修订笔记](Peripheral/SoftI2C/README.md)。本轮待目标构建、板端验证。
-
-### 2026-11-15：软 I²C 实测反馈与菜单/温控调整
-
-用户确认 `9709592` 的 SW3526 偶发整列离线已消失。删除临时 RAM 故障锁存、调度间隔和恢复失败统计，并保留原 recovery_count；修订后的 SCL/STOP/恢复时序与 UI 事务间隙调度不变，不恢复诊断打印。
-
-- Settings 图标页插入 Display（回收烧屏图标），原文字 Settings 改为 System（原图标）。Display 负责 Sleep、Keep On >5W、Contrast、Background、Screen Flip、Burn-in Test；System 负责 Fan +10'C、Temp#1/2 开关、Reset/ISP。
-- Keep On >5W 默认开，关闭只取消负载阻止自动睡眠，事件唤醒和手动睡眠保持。所有新增开关 RAM-only。
-- Temp#1 为 GX21M15U，Temp#2 为 SW3538 NTC，UI 标签不暴露芯片型号。Dashboard 和风扇统一使用已启用且有效的温度平均（单路可用则直接使用该路，签名定点值 0.1°C）；Statistics 仍显示独立原始镜像。没有可用源时显示 --.-C、风扇下一次 500 ms 调节为 255；输入 UVP 仍最高优先强制 0。取消旧的3次/3s失效宽限，因此上电未有首个样本且输入正常时也可能全速，待验证 PD 启动与风扇冲击。采样周期、供电保护、风扇曲线不改。
-- 本次清理版和新菜单/融合尚未目标构建或实机验证，之前的修复已实测有效，不代表本轮通过。i18n 仅维护规划，80 项、97 个汉字。
-
-### 2026-11-15：开关间隙与恐龙手感
-
-开关框及填充左移2px，右缘距 scrollbar 2px，数值栏不变。Dino 世界速度降至75%，跳跃模拟时间384→768ms、原高度不变，腿动画初始帧间隔48→96ms；保留16ms模拟、分数速度、生成倒计时和通信/UI调度。完成静态检查、10000步世界位移余数验证及跳跃逐点对照，未目标编译及板测。基于 IH01A 的 UTF-8 绘图/选框提取计划见 [APP/I18N.md](APP/I18N.md)，仅规划不启用中文化。
-
-### 2026-11-15：中文化正式接入
-
-- [APP/I18N.md](APP/I18N.md)：System→Language **默认开启（开机即中文）**/关闭为英文，81 原文键、64有效翻译、100汉字+95 ASCII，中文子集3655 B（原始BDF不可访问，复用两份Fusion Pixel子集及补充26个Ark Pixel真实字形，OFL许可保留）。U8G2_WITH_UNICODE 已开启，Clean Build必要，未改ASCII原字体、128×80、Dashboard及共用顶栏、数值右对齐。选框真实字宽+2、高13px，title clip裁剪，不限制宽度。未目标构建/板测，实际Flash增量待MAP。
-
-- 2026-11-16：`TIME_Micros()` 改为32位分段除法（保留64位计数及回绕语义）；统一中英文比例字库为 `font_fusion_pixel_p12_zhcn`，删除原1200 B ASCII字库，调整实际字宽对齐、About 和游戏排版。未目标编译/板测，实际 Flash 收益待新 MAP。
-- 恐龙跳跃模拟时长768→576ms，保留39px峰值，世界/腿/分数/生成速度与调度不变。36步整数插值模型核对完成。
-
-### 2026-11-16：PD 报文优先于超时（第一轮试验）
-
-SPR PPS 非标源首次合同生效后偶发/重复 st=9 超时，暂只改 PD_Main_Proc 的已发布 RX 优先级，保留经过验证的 PHY、PPS/EPR 参数、UI 和软件 I²C 调度。不新增诊断打印；具体回归版本及漏包原因尚未确定，实机验证待完成。详见 [PD/README.md](Peripheral/PD/README.md)。若仍复现再单独试验 UI 让行。
-
-### 2026-11-16：PD UI 让行（第二轮试验）
-
-7a03c22 接收优先版实测仍有 st=9 504ms 超时及重连。保留第一步，加入 PD_ShouldDeferUI()：PPS 刷新前50ms与 PD 交易等待期/PHY事件期间不执行普通 UI 帧，保留按键与遥测、电源、原启动及 PM 路径。无 PHY、请求策略、计时阈值及刷新周期变化；详见 [PD/README.md](Peripheral/PD/README.md)。清单/模型验证通过，尚待目标构建和板测。
+- 历史硬件 I²C RX DMA/EV 修复曾通过 5 min 大功率测试；后续诊断全关版本 9611c8c 用户确认 SW3538/GX21M15U 通信正常。软件 I²C 9709592 用户确认偶发离线消失。仅适用于当时测试条件。
+- 非标 PPS 曾重复超时/重连；先 RX-first，再 UI 让行。用户后续反馈 PD 目前还算稳定，未提供完整压力测试报告，不据此判定所有源/负载已验证。
+- 本轮 UI 文案、字库静态审查完成；目标 Clean Build、MAP/ELF 与板端复测未执行。建议覆盖 DC/UVP、SPR/PPS/EPR 与维持、端口插拔/负载变化、双温度失效、休眠唤醒、双语滚动与方向、连续 >12 min（最好跨 71.58 min 微秒回绕）。
+- 旧 README 的逐轮实验与历史 Flash 数据可从 [审查前版本](https://github.com/TKWTL/DPC27A-Desktop_PD_Power_Converter/blob/341b2c590010e1c9ccb11c7558f8f778ef4c64d2/Firmware/README.md) 追溯；详细故障复盘仍见 I²C、SoftI²C、PD 子文档。
 
 ## 模块文档
 
-- [`APP/framework/README.md`](APP/framework/README.md) — 低功耗框架(UI_OFF 休眠)
-- [`APP/MiaoUI/README.md`](APP/MiaoUI/README.md) — UI 框架与输入适配
-- [`BSP/Display/README.md`](BSP/Display/README.md) — SH1107 显示 BSP
-- [`BSP/Fan/README.md`](BSP/Fan/README.md) — 风扇 PWM
-- [`BSP/Buttons/README.md`](BSP/Buttons/README.md) — 按键状态机
-- [`BSP/SW3538/README.md`](BSP/SW3538/README.md) — SW3538 驱动
-- [`BSP/SW3526/README.md`](BSP/SW3526/README.md) — SW3526 驱动
-- [`Peripheral/PD/README.md`](Peripheral/PD/README.md) — USB-PD 策略/PHY 分层
-- [`Peripheral/I2C/README.md`](Peripheral/I2C/README.md) — 硬件 I2C1 中断驱动事务引擎
-- [`Peripheral/SoftI2C/README.md`](Peripheral/SoftI2C/README.md) — 软件 I2C 引擎
-- [`Peripheral/SPI/README.md`](Peripheral/SPI/README.md) — 显示 SPI + DMA 完成中断 + 硬件 NSS
-- [`Peripheral/USART/README.md`](Peripheral/USART/README.md) — 异步串口
-- [`ThirdParty/u8g2/README.md`](ThirdParty/u8g2/README.md) — 精简 u8g2
-
-- 2026-11-16 字库调整：保持唯一 `font_fusion_pixel_p12_zhcn` 符号与100个中文字形，ASCII使用原MiaoUI h12w6点阵重编码（固定6px步进），恢复原Dashboard、数值栏和About等宽布局；目标编译、板测及MAP仍待验证。
+- [MiaoUI](APP/MiaoUI/README.md) · [I18N](APP/I18N.md) · [低功耗框架](APP/framework/README.md)
+- [按键](BSP/Buttons/README.md) · [显示](BSP/Display/README.md) · [风扇](BSP/Fan/README.md) · [SW3538](BSP/SW3538/README.md) · [SW3526](BSP/SW3526/README.md)
+- [PD](Peripheral/PD/README.md) · [I²C](Peripheral/I2C/README.md) · [SoftI²C](Peripheral/SoftI2C/README.md) · [SPI](Peripheral/SPI/README.md) · [Time](Peripheral/Time/README.md) · [USART](Peripheral/USART/README.md)
+- [u8g2](ThirdParty/u8g2/README.md) · [第三方声明](../THIRD_PARTY_NOTICES.md)
