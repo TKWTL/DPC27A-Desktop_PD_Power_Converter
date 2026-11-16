@@ -1,6 +1,6 @@
 /* Display-only dictionary inspired by IH01A (original English key -> zh-Hans).
  * Dashboard and numeric data still use Disp_DrawStr and UI_FONT directly.
- * No heap, locale state is RAM-only and reset defaults to English. */
+ * No heap, locale state is RAM-only and resets to Chinese (zh-Hans) by default. */
 #include "i18n.h"
 #include "MiaoUI/ui_conf.h"
 #include "MiaoUI/display/dispDriver.h"
@@ -11,7 +11,7 @@ typedef struct {
     const char *zh;
 } translation_t;
 
-static uint8_t s_chinese;
+static uint8_t s_chinese = 1u;
 static const translation_t s_dictionary[] = {
 #define DPC_I18N_RUNTIME_TABLE 1
 #include "i18n_table.inc"

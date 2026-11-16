@@ -248,7 +248,7 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 
 ### 2026-11-15：中文化正式接入
 
-- [APP/I18N.md](APP/I18N.md)：System→Language 默认英文/开启中文，81 原文键、64有效翻译、100汉字+95 ASCII，中文子集3655 B（原始BDF不可访问，复用两份Fusion Pixel子集及补充26个Ark Pixel真实字形，OFL许可保留）。U8G2_WITH_UNICODE 已开启，Clean Build必要，未改ASCII原字体、128×80、Dashboard及共用顶栏、数值右对齐。选框真实字宽+2、高13px，title clip裁剪，不限制宽度。未目标构建/板测，实际Flash增量待MAP。
+- [APP/I18N.md](APP/I18N.md)：System→Language **默认开启（开机即中文）**/关闭为英文，81 原文键、64有效翻译、100汉字+95 ASCII，中文子集3655 B（原始BDF不可访问，复用两份Fusion Pixel子集及补充26个Ark Pixel真实字形，OFL许可保留）。U8G2_WITH_UNICODE 已开启，Clean Build必要，未改ASCII原字体、128×80、Dashboard及共用顶栏、数值右对齐。选框真实字宽+2、高13px，title clip裁剪，不限制宽度。未目标构建/板测，实际Flash增量待MAP。
 
 - 2026-11-16：`TIME_Micros()` 改为32位分段除法（保留64位计数及回绕语义）；统一中英文比例字库为 `font_fusion_pixel_p12_zhcn`，删除原1200 B ASCII字库，调整实际字宽对齐、About 和游戏排版。未目标编译/板测，实际 Flash 收益待新 MAP。
 - 恐龙跳跃模拟时长768→576ms，保留39px峰值，世界/腿/分数/生成速度与调度不变。36步整数插值模型核对完成。

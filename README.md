@@ -115,10 +115,11 @@ flowchart LR
 
 ## 6. 制作与装配
 
-![PCB 全套](Images/Assembly/01-pcb-set.jpg)
+![主板插件面](Images/Assembly/5-部分插件.jpg)
 
-<!-- 待拍(按装配顺序):PCB 平铺 → BOM 外物料 → 空板 → 贴装完成 → 板间连接 →
-     OLED 安装 → 风扇安装 → 内部走线 → 合壳前 → 成品;命名 01-pcb-set.jpg 起 -->
+> 装配过程的 14 张实拍图按序号排列在 [`Images/Assembly/`](Images/Assembly/),
+> 分步说明与检查点见 [`Docs/ASSEMBLY_GUIDE.md`](Docs/ASSEMBLY_GUIDE.md)(文末附实拍图索引);
+> 4 块板的打样工艺(层数/板厚/阻焊/表面处理)见该文档 §3。
 
 - 打样文件:`Hardware/Manufacturing/Gerber/*.zip`(4 块板:主板/背板/内面板/外面板),
   贴片坐标 `Hardware/Manufacturing/CPL/*.csv`(仅主板/内面板;外面板与背板是无元件
@@ -128,7 +129,7 @@ flowchart LR
   方便备料与手焊核对;
 - 原理图预览/网表:`Hardware/Preview/`;LCEDA Pro 工程:`Hardware/source/*.epro2`;
 - 固件烧录:USB 直连(WCHISPStudio + `Reboot to ISP`)或 WCH-LinkE,
-  见 [`Docs/ASSEMBLY_GUIDE.md`](Docs/ASSEMBLY_GUIDE.md) §13;工程见 [`Firmware/`](Firmware/)。
+  见 [`Docs/ASSEMBLY_GUIDE.md`](Docs/ASSEMBLY_GUIDE.md) §14;工程见 [`Firmware/`](Firmware/)。
 
 > 完整物料表(BOM + **BOM 外机械件**)、分步装配说明与检查点:
 > [`Docs/ASSEMBLY_GUIDE.md`](Docs/ASSEMBLY_GUIDE.md)

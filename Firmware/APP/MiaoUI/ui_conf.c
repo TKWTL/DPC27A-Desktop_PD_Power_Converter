@@ -117,7 +117,7 @@ void Create_Text(ui_t *ui)
      * UI_FONT_WIDTH - 1) with a 12 px line step, so keep every line <= 20
      * characters and the whole block within ~6 visible lines.  A full line is
      * 20 x 6 px + 4 px inset = 124 px, inside the 128 px panel width. */
-    about_text.ptr = "  Desktop PD Power\nSource: https://github.com/TKWTL/Desktop_PD_Power_Converter\n MiaoUI u8g2 coroOS\nMIT BSD-2 BSD-3 AGPL";
+    about_text.ptr = "  Desktop PD Power\n1-3Ch Power Converter with Quick Charge\n Git: github.com/TKWTL/DPC27A-Desktop_PD_Power_Converter";
     about_text.font = UI_FONT;
     about_text.fontHight = UI_FONT_HIGHT;
     about_text.fontWidth = UI_FONT_WIDTH;

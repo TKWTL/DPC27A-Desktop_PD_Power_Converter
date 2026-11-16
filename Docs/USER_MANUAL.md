@@ -86,7 +86,7 @@
 - `-Settings`:图标子菜单，依次为返回、`-Display`、`-TypeA+C`、`-TypeC1`、`-TypeC2`、`-System`。
   - Display：Sleep Options、Keep On >5W（默认开）、Contrast、Background、Screen Flip、Burn-in Test（白屏检测 OLED 老化）。
   - 三个端口：逐端口启停快充协议（见下方说明）。
-  - System：Fan +10'C、Use Temp#1、Use Temp#2（两项默认开）、Language（OFF 英文/ON 中文，复位恢复英文）、Reset Now（软复位）、Reboot to ISP（出厂 ISP 引导，见 §11）。
+  - System：Fan +10'C、Use Temp#1、Use Temp#2（两项默认开）、Language（OFF 英文/ON 中文，**默认开即中文**，复位恢复中文）、Reset Now（软复位）、Reboot to ISP（出厂 ISP 引导，见 §11）。
 - `-Statistics`:PD 档位、请求电压/电流、VBUS、两路独立温度（Temp#1/Temp#2）。
 - `-Dino Game`:小游戏(娱乐功能);
 - `-About`:关于页。
@@ -217,4 +217,4 @@ A:由输出控制器自动识别,仪表盘协议列显示当前实际协定的�
 
 ### 界面语言
 
-Settings → System → Language：确认键切换英文/简体中文。Dashboard 实时仪表盘及图标菜单顶栏始终保持原 ASCII，数据值、物理单位和协议缩写不随语言变化；仅菜单/提示文本翻译。该设置当前不掉电保存。
+Settings → System → Language：确认键切换英文/简体中文。**默认开启（开机即简体中文）**，复位后也回到中文；想用英文则把该项关掉。Dashboard 实时仪表盘及图标菜单顶栏始终保持原 ASCII，数据值、物理单位和协议缩写不随语言变化；仅菜单/提示文本翻译。该设置当前不掉电保存。
