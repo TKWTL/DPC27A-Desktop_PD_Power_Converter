@@ -66,7 +66,7 @@ typedef struct
 
 static void dash_draw_right(uint16_t right_x, uint16_t y, const char *text)
 {
-    int16_t x = (int16_t)right_x - (int16_t)(strlen(text) * UI_FONT_WIDTH);
+    int16_t x = (int16_t)right_x - (int16_t)Disp_GetUTF8Width(text);
 
     if(x < 0)
         x = 0;
@@ -81,9 +81,13 @@ static void dash_draw_center(uint16_t left_x, uint16_t right_x, uint16_t y,
                              const char *text, int16_t dx)
 {
     int16_t width = (int16_t)(right_x - left_x + 1u);
-    int16_t text_w = (int16_t)(strlen(text) * UI_FONT_WIDTH);
+    int16_t text_w = (int16_t)Disp_GetUTF8Width(text);
     int16_t x = (int16_t)left_x + (width - text_w) / 2 + dx;
 
+    if(x < (int16_t)left_x)
+        x = (int16_t)left_x;
+    if(x + text_w > (int16_t)right_x + 1)
+        x = (int16_t)right_x + 1 - text_w;
     if(x < 0)
         x = 0;
 
@@ -99,7 +103,7 @@ static void dash_draw_column(const dash_column_t *col, uint16_t name_x,
     dash_draw_right(right_x, (uint16_t)(y + DASH_ROW_STEP), col->volt);
     dash_draw_right(right_x, (uint16_t)(y + 2u * DASH_ROW_STEP), col->amp);
     dash_draw_right(right_x, (uint16_t)(y + 3u * DASH_ROW_STEP), col->watt);
-    dash_draw_center(name_x, right_x, (uint16_t)(y + 4u * DASH_ROW_STEP),
+    dash_draw_center((uint16_t)(right_x - 41u), right_x, (uint16_t)(y + 4u * DASH_ROW_STEP),
                      col->protocol, protocol_dx);
 }
 
@@ -329,7 +333,7 @@ static void dash_fmt_row1_head(char *head, size_t size)
 /* Row 1 with its coordinates unchanged; the main icon menu calls this from
  * ui.c so the menu shows the same live status line (128x80 layout only). */
 /* Localization invariant: this shared status line and Dashboard_Page keep
- * their original ASCII text, fixed-width font and geometry in all languages.
+ * ASCII data and column anchors in all languages; proportional glyphs are measured.
  * Only the menu entry -Dashboard may be translated (see APP/I18N.md). */
 void Dashboard_DrawStatusLine(const ui_t *ui)
 {
@@ -342,8 +346,23 @@ void Dashboard_DrawStatusLine(const ui_t *ui)
     Disp_SetFont(UI_FONT);
     Disp_SetMaxClipWindow();
     Disp_SetDrawColor(&color);
+    const char *state = dash_pd_state_text();
+    const uint16_t state_w = Disp_GetUTF8Width(state);
+    const uint16_t head_max = (uint16_t)(DASH_COL3_RIGHT - state_w - DASH_X_MARGIN - 2u);
+    /* The proportional Wmax suffix can crowd out SPR/EPR. Keep the
+     * value and W unit; omit only "max" if the full header will not fit. */
+    if(Disp_GetUTF8Width(head) > head_max)
+    {
+        size_t len = strlen(head);
+        if(len >= 3u && strcmp(head + len - 3u, "max") == 0)
+            head[len - 3u] = '\0';
+    }
+    Disp_SetClipWindow(DASH_X_MARGIN, 0u,
+                       (uint16_t)(DASH_COL3_RIGHT - state_w - 2u),
+                       (uint16_t)(DASH_ROW1_Y + 2u));
     Disp_DrawStr(DASH_X_MARGIN, DASH_ROW1_Y, head);
-    dash_draw_right(DASH_COL3_RIGHT, DASH_ROW1_Y, dash_pd_state_text());
+    Disp_SetMaxClipWindow();
+    dash_draw_right(DASH_COL3_RIGHT, DASH_ROW1_Y, state);
 }
 
 void Dashboard_Page(ui_t *ui)

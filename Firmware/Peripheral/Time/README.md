@@ -14,6 +14,8 @@
   (`soft_i2c.c`)、USART DMA 背压等待(`usart_async.c`)、硬件 I2C 总线恢复脉冲
   (`i2c_api.c`)。
 
+- `TIME_Micros()` 使用高速低字路径及基数65536的32位分段除法，等价于 `(uint32_t)(ticks64 / ticks_per_us)`；保留约71.58分钟的微秒时间戳回绕，不依赖毫秒中断。目标编译、MAP及板测待验证。
+
 ## 毫秒级:1 ms 比较中断自增
 
 - `STE | STIE` 打开计数器与比较中断,`CMP = 6000`(6 MHz × 1 ms);

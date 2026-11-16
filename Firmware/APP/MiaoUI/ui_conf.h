@@ -44,10 +44,10 @@ extern "C" {
 #define UI_DEFAULT_ROTATION U8G2_R1
 #define UI_ALTERNATE_ROTATION U8G2_R3
 // 菜单字体定义
-#define UI_FONT   font_menu_main_h12w6
+#define UI_FONT   font_fusion_pixel_p12_zhcn
 // 字体尺寸定义
 #define UI_FONT_HIGHT   12 // 字体高度
-// 字体宽度
+// 数字及原布局的名义步进；比例文字必须实际测宽
 #define UI_FONT_WIDTH  6
 // 文本间距
 #define UI_TEXT_SPACE  13

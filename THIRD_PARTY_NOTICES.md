@@ -14,10 +14,13 @@ in individual source files when redistributing modified versions.
 
 ## MiaoUI
 
-The MiaoUI core, widgets, display abstraction and bundled `font_menu_main_h12w6`
-used by this firmware were ported from the user-supplied `Firmware_0.zip`. MiaoUI
-source files retain their MIT notices. Only the one menu font required by the
-initial product UI is linked.
+The MiaoUI core, widgets and display abstraction used by this firmware were
+ported from the user-supplied `Firmware_0.zip`. MiaoUI source files retain their
+MIT notices. The original bundled ASCII font has been removed.
+
+The shared `font_fusion_pixel_p12_zhcn` subset contains Fusion Pixel and Ark
+Pixel glyphs; both font licenses (SIL OFL 1.1) are retained in
+`Firmware/APP/MiaoUI/fonts/`. See `Firmware/APP/I18N.md` for provenance.
 
 The three 30x30 XBM menu image arrays retained from that package carry their
 original GPL-3.0-or-later notice in `Firmware/APP/MiaoUI/images/image.c`. GPLv3

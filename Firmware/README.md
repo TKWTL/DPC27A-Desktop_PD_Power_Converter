@@ -104,7 +104,7 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 - u8g2 占用一块 1280 字节全帧缓冲,中断驱动传输层另有一块 1280 字节 DMA 快照;
   帧按 page 分批发运,像素数据传输期间不会长时间占住前台调度器。
 - MiaoUI 保留剪裁窗口、圆角矩形/框、XBM 图片、圆/线图元和文本渲染;
-  当前只链接 `font_menu_main_h12w6` 一个字体。
+  当前只链接 `font_fusion_pixel_p12_zhcn` 一个中英文比例字库。
 - 首屏是 **Dashboard 仪表盘函数页**(见下)。主图标菜单顺序为
   Dashboard / Settings / Statistics / Dino Game / About；
   Settings 图标子菜单依次为返回、Display、TypeA+C、TypeC1、TypeC2、System；Display 复用 `img_burn_in`，System 保留 `img_configuration`。Statistics 提供 PD 档位、电压/电流、VBUS 与 Temp#1/Temp#2 温度。
@@ -249,6 +249,8 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 ### 2026-11-15：中文化正式接入
 
 - [APP/I18N.md](APP/I18N.md)：System→Language 默认英文/开启中文，81 原文键、64有效翻译、100汉字+95 ASCII，中文子集3655 B（原始BDF不可访问，复用两份Fusion Pixel子集及补充26个Ark Pixel真实字形，OFL许可保留）。U8G2_WITH_UNICODE 已开启，Clean Build必要，未改ASCII原字体、128×80、Dashboard及共用顶栏、数值右对齐。选框真实字宽+2、高13px，title clip裁剪，不限制宽度。未目标构建/板测，实际Flash增量待MAP。
+
+- 2026-11-16：`TIME_Micros()` 改为32位分段除法（保留64位计数及回绕语义）；统一中英文比例字库为 `font_fusion_pixel_p12_zhcn`，删除原1200 B ASCII字库，调整实际字宽对齐、About 和游戏排版。未目标编译/板测，实际 Flash 收益待新 MAP。
 - 恐龙跳跃模拟时长768→576ms，保留39px峰值，世界/腿/分数/生成速度与调度不变。36步整数插值模型核对完成。
 
 ### 2026-11-16：PD 报文优先于超时（第一轮试验）

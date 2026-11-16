@@ -31,9 +31,8 @@
 
 #include "i18n.h"
 
-/* Keep wholly ASCII paragraphs (URLs/licenses in particular) in the
- * original 6px font, so the existing six-line About text still fits.
- * A paragraph containing Han uses the locale font for all its wrapped lines. */
+/* Both text paths use the shared proportional font; the locale still
+ * chooses UTF-8 versus ASCII decoding. Wrap by measured pixel width. */
 static uint8_t text_paragraph_is_utf8(const char *p)
 {
     if(!DPC_I18n_IsChinese())
@@ -74,7 +73,7 @@ void Text_Widget(ui_t *ui)
     uint16_t y;
     uint8_t utf8;
     const uint16_t left = 4u;
-    const uint16_t right = UI_HOR_RES - 4u; /* 120px, preserves 20 ASCII cells */
+    const uint16_t right = UI_HOR_RES - 4u; /* 120px of measured text */
     if(!ui || !ui->nowItem || !ui->nowItem->element || !ui->nowItem->element->text)
         return;
     const char *ptr = DPC_I18n_Text(ui->nowItem->element->text->ptr);

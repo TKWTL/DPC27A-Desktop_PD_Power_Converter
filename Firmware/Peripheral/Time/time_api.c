@@ -93,7 +93,26 @@ uint32_t TIME_UsToTicks(uint32_t us)
 
 uint32_t TIME_Micros(void)
 {
-    return (uint32_t)(TIME_Ticks64() / (uint64_t)s_ticks_per_us);
+    const uint64_t ticks = time_read_ticks();
+    const uint32_t hi = (uint32_t)(ticks >> 32);
+    const uint32_t lo = (uint32_t)ticks;
+    const uint32_t d = s_ticks_per_us;
+    uint32_t rem, n, q;
+
+    if(hi == 0u)
+        return lo / d;
+
+    /* Base-65536 division: keep the low 32 quotient bits. The remainder
+     * is < d, and TIME_Init bounds d to 1..536 (uint32_t HCLK / 8 MHz),
+     * so both 16-bit digit steps fit in uint32_t. No 64-bit division and
+     * no dependency on the millisecond interrupt, even at counter wrap. */
+    rem = hi % d;
+    n = (rem << 16) | (lo >> 16);
+    q = n / d;
+    rem = n % d;
+    n = (rem << 16) | (lo & 0xFFFFu);
+
+    return (q << 16) | (n / d);
 }
 
 uint32_t TIME_Millis(void)

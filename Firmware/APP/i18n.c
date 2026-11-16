@@ -47,7 +47,7 @@ const char *DPC_I18n_Text(const char *english)
 
 const uint8_t *DPC_I18n_Font(void)
 {
-    return s_chinese ? font_dpc_zh12 : UI_FONT;
+    return UI_FONT;
 }
 
 uint16_t DPC_I18n_TextWidth(const char *text)
