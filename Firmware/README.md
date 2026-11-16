@@ -251,6 +251,10 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 - [APP/I18N.md](APP/I18N.md)：System→Language 默认英文/开启中文，81 原文键、64有效翻译、100汉字+95 ASCII，中文子集3655 B（原始BDF不可访问，复用两份Fusion Pixel子集及补充26个Ark Pixel真实字形，OFL许可保留）。U8G2_WITH_UNICODE 已开启，Clean Build必要，未改ASCII原字体、128×80、Dashboard及共用顶栏、数值右对齐。选框真实字宽+2、高13px，title clip裁剪，不限制宽度。未目标构建/板测，实际Flash增量待MAP。
 - 恐龙跳跃模拟时长768→576ms，保留39px峰值，世界/腿/分数/生成速度与调度不变。36步整数插值模型核对完成。
 
+### 2026-11-16：PD 报文优先于超时（第一轮试验）
+
+SPR PPS 非标源首次合同生效后偶发/重复 st=9 超时，暂只改 PD_Main_Proc 的已发布 RX 优先级，保留经过验证的 PHY、PPS/EPR 参数、UI 和软件 I²C 调度。不新增诊断打印；具体回归版本及漏包原因尚未确定，实机验证待完成。详见 [PD/README.md](Peripheral/PD/README.md)。若仍复现再单独试验 UI 让行。
+
 ## 模块文档
 
 - [`APP/framework/README.md`](APP/framework/README.md) — 低功耗框架(UI_OFF 休眠)

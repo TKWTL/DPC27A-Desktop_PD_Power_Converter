@@ -1528,12 +1528,35 @@ static void PD_Main_Proc( )
     if(PD_EPR_State != EPR_ST_OFF)
         PD_EPR_TimerMs = (UINT16)(PD_EPR_TimerMs + Tmr_Ms_Dlt);
 
+    /* Accrue real elapsed time once, against the states that existed on
+     * entry. A queued RX response may reset these counters below. */
     if(PD_EPR_State == EPR_ST_ACTIVE)
     {
         PD_ContractMaintenanceMs = (UINT16)(PD_ContractMaintenanceMs + Tmr_Ms_Dlt);
         if(PD_EPR_KeepAliveWaitAck)
             PD_EPR_KeepAliveAckMs = (UINT16)(PD_EPR_KeepAliveAckMs + Tmr_Ms_Dlt);
+    }
+    else if(PD_PPS_ContractActive &&
+            PD_EPR_State == EPR_ST_OFF &&
+            PD_Ctl.PD_State == STA_IDLE)
+    {
+        PD_ContractMaintenanceMs = (UINT16)(PD_ContractMaintenanceMs + Tmr_Ms_Dlt);
+    }
 
+    if(PD_Ctl.PD_State == STA_SRC_CONNECT ||
+       PD_Ctl.PD_State == STA_RX_ACCEPT_WAIT ||
+       PD_Ctl.PD_State == STA_RX_PS_RDY_WAIT)
+        PD_Ctl.PD_Comm_Timer += Tmr_Ms_Dlt;
+
+    /* RX published by the PHY after GoodCRC takes priority over deadlines
+     * and timer-originated TX. Handle one packet, then re-evaluate the new
+     * state on the next poll (without charging this elapsed time again).
+     * Hard Reset retains the first priority above. */
+    if(PD_Port_MessagePending())
+        goto receive_message;
+
+    if(PD_EPR_State == EPR_ST_ACTIVE)
+    {
         if(PD_EPR_KeepAliveWaitAck && PD_EPR_KeepAliveAckMs > PD_EPR_KEEPALIVE_ACK_TIMEOUT_MS)
         {
             printf("[PD] KA timeout\r\n");
@@ -1555,7 +1578,6 @@ static void PD_Main_Proc( )
             PD_EPR_State == EPR_ST_OFF &&
             PD_Ctl.PD_State == STA_IDLE)
     {
-        PD_ContractMaintenanceMs = (UINT16)(PD_ContractMaintenanceMs + Tmr_Ms_Dlt);
         if(PD_ContractMaintenanceMs >= PD_PPS_REFRESH_PERIOD_MS)
         {
             if(PD_PPS_Request(PD_Selected_PDO, PD_Selected_mV, PD_Selected_mA, 1u) == DEF_PD_TX_OK)
@@ -1609,6 +1631,10 @@ static void PD_Main_Proc( )
         }
     }
 
+    /* A message may have arrived during maintenance or a synchronous TX. */
+    if(PD_Port_MessagePending())
+        goto receive_message;
+
     switch( PD_Ctl.PD_State )
     {
         case STA_DISCONNECT:
@@ -1617,12 +1643,12 @@ static void PD_Main_Proc( )
             break;
 
         case STA_SRC_CONNECT:
-            PD_Ctl.PD_Comm_Timer += Tmr_Ms_Dlt;
-
             /* A Source normally sends Source_Capabilities after attach; ask
              * explicitly if it did not (bounded retries, then re-arm). */
             if(PD_Ctl.PD_Comm_Timer >= PD_GET_SOURCE_CAP_RETRY_MS)
             {
+                if(PD_Port_MessagePending())
+                    goto receive_message;
                 if(s_pd_get_src_cap_retries < PD_GET_SOURCE_CAP_MAX_RETRIES)
                 {
                     s_pd_get_src_cap_retries++;
@@ -1657,9 +1683,11 @@ static void PD_Main_Proc( )
 
         case STA_RX_ACCEPT_WAIT:
         case STA_RX_PS_RDY_WAIT:
-            PD_Ctl.PD_Comm_Timer += Tmr_Ms_Dlt;
             if(PD_Ctl.PD_Comm_Timer > 499)
             {
+                /* Narrow the race with the USBPD IRQ at the deadline. */
+                if(PD_Port_MessagePending())
+                    goto receive_message;
                 printf("[PD] Timeout st=%u %ums\r\n",
                        (unsigned)PD_Ctl.PD_State, (unsigned)PD_Ctl.PD_Comm_Timer);
                 PD_Ctl.Flag.Bit.Stop_Det_Chk = 0;
@@ -1715,7 +1743,8 @@ static void PD_Main_Proc( )
             break;
     }
 
-    if(PD_Port_MessagePending())
+receive_message:
+    if(PD_Port_MessagePending() && !PD_Port_HardResetPending())
     {
         UINT8 is_extended;
 

@@ -90,3 +90,9 @@
 
 - `Docs/FIRMWARE_ARCHITECTURE.md`:PD 在整体调度中的位置;
 - 时序与策略基线:本文件"请求策略"节与 `pd.c` 顶部宏。
+
+## 2026-11-16：PD 接收优先 A/B 验证（第一步，待上板）
+
+用户报告中文化后 SPR 非标源（SW3538，PPS PDO6 21 V / 6.35 A）首次合同生效，之后重复 `Timeout st=9 529–542ms`、SoftReset TX 失败及重新连接。st=9 为 STA_RX_PS_RDY_WAIT。自 a538d9a 日志精简至 c5f9b87，pd.c/pd_port.c blob 未变化；具体回归版本、是否源端发送了 PS_RDY、是否丢包仍未确定。
+
+此提交仅修改 PD_Main_Proc 的优先次序：Hard Reset 首先处理；对入口状态累计一次本轮 elapsed；已由 PHY 完成 GoodCRC 并发布的 RX 事件先进入原报文处理分支，本轮不再执行旧状态的超时/维护发送；下一轮按新状态重新判断。维护后及普通响应超时/GetCap 重试前再次检查 pending，缩小与 IRQ 的竞争窗口。原报文解析、500ms 超时、PPS 8s 刷新、EPR、PHY、UI/软 I²C 调度及非标申请策略保持不变。没有把尚在自动 GoodCRC 中的报文视为已发布，也没有实现接收双缓冲或消除 IRQ 竞争窗口；因此无法补回在线路上漏收的报文。无新增串口日志。静态/状态模型验证，不代表板端修复成功。若仍失效，下一步单独试验 PPS/PD 事务期间非必要 UI 绘制让行。
