@@ -289,7 +289,7 @@ THRD_DECLARE(thread_ui)
                    (!app_soft_i2c_busy() &&
                     (uint32_t)(TIME_Millis() - frame_ms) >= UI_FRAME_PERIOD_MS &&
                     !pm_api_ui_should_block() && !pm_api_is_unstable_wake() &&
-                    APP_NoncriticalIOAllowed()));
+                    APP_NoncriticalIOAllowed() && !PD_ShouldDeferUI()));
         now_ms = TIME_Millis();
         dispatch_ms = now_ms;
 
@@ -344,9 +344,11 @@ THRD_DECLARE(thread_ui)
 
                 /* The service runs before UI; a completed transaction
                  * leaves a render opportunity before power_mirror can start
-                 * the next one. Keep due frames pending, not catch-up bursts. */
+                 * the next one. Also defer for a PD exchange independently
+                 * of contract readiness: PPS refresh keeps the old contract
+                 * valid. Keep keys queued and the frame due, no catch-up. */
                 if((uint32_t)(now_ms - frame_ms) >= UI_FRAME_PERIOD_MS &&
-                   !app_soft_i2c_busy())
+                   !app_soft_i2c_busy() && !PD_ShouldDeferUI())
                 {
                     frame_ms = now_ms; /* no catch-up rendering burst */
                     Statistics_Poll();

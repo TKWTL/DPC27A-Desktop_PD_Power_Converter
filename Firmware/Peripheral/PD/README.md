@@ -96,3 +96,9 @@
 用户报告中文化后 SPR 非标源（SW3538，PPS PDO6 21 V / 6.35 A）首次合同生效，之后重复 `Timeout st=9 529–542ms`、SoftReset TX 失败及重新连接。st=9 为 STA_RX_PS_RDY_WAIT。自 a538d9a 日志精简至 c5f9b87，pd.c/pd_port.c blob 未变化；具体回归版本、是否源端发送了 PS_RDY、是否丢包仍未确定。
 
 此提交仅修改 PD_Main_Proc 的优先次序：Hard Reset 首先处理；对入口状态累计一次本轮 elapsed；已由 PHY 完成 GoodCRC 并发布的 RX 事件先进入原报文处理分支，本轮不再执行旧状态的超时/维护发送；下一轮按新状态重新判断。维护后及普通响应超时/GetCap 重试前再次检查 pending，缩小与 IRQ 的竞争窗口。原报文解析、500ms 超时、PPS 8s 刷新、EPR、PHY、UI/软 I²C 调度及非标申请策略保持不变。没有把尚在自动 GoodCRC 中的报文视为已发布，也没有实现接收双缓冲或消除 IRQ 竞争窗口；因此无法补回在线路上漏收的报文。无新增串口日志。静态/状态模型验证，不代表板端修复成功。若仍失效，下一步单独试验 PPS/PD 事务期间非必要 UI 绘制让行。
+
+## 2026-11-16：PD 事务期间 UI 让行（第二步，待上板）
+
+用户确认第一步 7a03c22 仍复现：`Timeout st=9 504ms`，SoftReset TX 失败、GetCap TX 失败和反复重连；后来仍可完成一次或多次 PPS 合同。说明 RX-first 单独不足，不能据此断言丢包发生于哪一层。本轮保留第一步，仅新增 PD_ShouldDeferUI() 供 thread_ui 普通帧调用：已发布 RX/Hard Reset、自动 GoodCRC/TX 在途、已连接且协议非 IDLE、EPR Entry/退出等非 ACTIVE 状态或等待 KeepAlive ACK 时暂缓绘制；PPS 刷新前最后50ms（维护计数 >=7950ms）也提前让行，防止长绘制跨越刷新时刻。PPS 刷新发送成功后 STA_RX_ACCEPT_WAIT/STA_RX_PS_RDY_WAIT 即便旧合同已 ready 仍阻止画帧，处理 PS_RDY 后回到 IDLE 即恢复。固定合同稳定且无待处理事件、未连接时（无 PHY 事务）正常绘制。50ms 是基于首轮 529–542ms 日志的保守测试裕量，不是协议参数，不改变8s刷新时间。
+
+只阻止 Statistics_Poll/ui_loop 所在普通帧和相应提前派发条件；原200ms OLED初始化、PM/唤醒、原启动键盘屏蔽、8ms按键扫描/入队、6ms目标帧周期、333/500ms镜像、风扇、软硬件 I2C 和 PD PHY/解析/超时均不改。新的 PD gate 不清输入队列、不改 frame_ms；协商久时画面可能短暂停留、原有限队列仍可能满。其它任务或已开始的绘制仍可能阻塞，不能杜绝单缓冲 RX 盲区。没有修改功率分配或非标申请策略，没有新增日志。源码/状态模型验证；目标编译和实机待完成。若仍复现，优先抓取 TX/GoodCRC、Accept/PS_RDY 的 CC 波形或利用现有 PHY RAM 计数器，而不是继续猜测放宽超时。

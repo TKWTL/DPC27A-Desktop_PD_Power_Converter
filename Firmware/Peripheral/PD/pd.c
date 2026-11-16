@@ -2172,6 +2172,28 @@ uint8_t PD_IsPPSContractActive(void)
     return PD_PPS_ContractActive ? 1u : 0u;
 }
 
+/* UI only: distinguish a timing-critical exchange from an established
+ * contract. In particular IsPowerReady stays true during PPS refresh.
+ * A short lead window avoids starting a long draw just before refresh. */
+uint8_t PD_ShouldDeferUI(void)
+{
+    if(PD_Port_MessagePending() || PD_Port_HardResetPending() ||
+       PD_Port_AutoAckBusy() || PD_Port_TxBusy())
+        return 1u;
+
+    if(!PD_IsConnected())
+        return 0u;
+
+    if(PD_Ctl.PD_State != STA_IDLE)
+        return 1u;
+
+    if(PD_EPR_State != EPR_ST_OFF)
+        return (PD_EPR_State != EPR_ST_ACTIVE || PD_EPR_KeepAliveWaitAck) ? 1u : 0u;
+
+    return (PD_PPS_ContractActive &&
+            PD_ContractMaintenanceMs >= PD_PPS_REFRESH_PERIOD_MS - 50u) ? 1u : 0u;
+}
+
 uint8_t PD_WantsFastPoll(void)
 {
     /* Sender-response timing is tighter than the idle cadence: never sleep

@@ -255,6 +255,10 @@ u8g2 只是作为刻意精简的 SH1107 图形依赖回归,不再包含旧的 SS
 
 SPR PPS 非标源首次合同生效后偶发/重复 st=9 超时，暂只改 PD_Main_Proc 的已发布 RX 优先级，保留经过验证的 PHY、PPS/EPR 参数、UI 和软件 I²C 调度。不新增诊断打印；具体回归版本及漏包原因尚未确定，实机验证待完成。详见 [PD/README.md](Peripheral/PD/README.md)。若仍复现再单独试验 UI 让行。
 
+### 2026-11-16：PD UI 让行（第二轮试验）
+
+7a03c22 接收优先版实测仍有 st=9 504ms 超时及重连。保留第一步，加入 PD_ShouldDeferUI()：PPS 刷新前50ms与 PD 交易等待期/PHY事件期间不执行普通 UI 帧，保留按键与遥测、电源、原启动及 PM 路径。无 PHY、请求策略、计时阈值及刷新周期变化；详见 [PD/README.md](Peripheral/PD/README.md)。清单/模型验证通过，尚待目标构建和板测。
+
 ## 模块文档
 
 - [`APP/framework/README.md`](APP/framework/README.md) — 低功耗框架(UI_OFF 休眠)

@@ -53,6 +53,9 @@ uint8_t PD_IsPPSContractActive(void);
  * passes at full speed (source attached, GoodCRC in flight).  Sleeping here
  * stretches the Sink sender-response latency outside the PD timing windows. */
 uint8_t PD_WantsFastPoll(void);
+/* Defer noncritical foreground UI drawing during a PD exchange or the
+ * 50 ms lead-in to a PPS refresh. Does not change contract readiness. */
+uint8_t PD_ShouldDeferUI(void);
 
 typedef enum
 {
