@@ -3,7 +3,7 @@
 > 适用对象:拿到成品或自行装配完成的使用者。本文只讲**怎么用**;
 > 固件实现细节见 [`FIRMWARE_ARCHITECTURE.md`](FIRMWARE_ARCHITECTURE.md)。
 
-![整机与接口](../Images/Product/ports.jpg)
+![整机与接口(5 V 输入时的主界面)](../Images/Product/主界面-5V输入.jpg)
 
 <!-- 待拍:接口侧照片,标注 DC 输入、A + C、C1、C2 与 NEXT/ENTER 两个按键
      (NEXT 右侧为三角箭头,ENTER 右侧为圆形图标);建议同时拍一张
@@ -170,17 +170,33 @@
 
 ### 方法 1:USB 直接下载(推荐,免拆机)
 
+![系统设置:最后一项为「重启至ISP模式」](../Images/Product/系统设置界面.jpg)
+
 1. 电脑安装 **WCHISPStudio**(沁恒官方工具);
-2. 从本仓库的 **GitHub Releases** 下载固件 `.hex` 文件(也可自行用 MounRiver
-   Studio II 构建 `Firmware/` 工程生成);
-3. 用 USB 线把设备 USB 口连接到电脑;
-4. 在设备菜单里选择 **`Reboot to ISP`**——设备复位并进入出厂 ISP 引导;
-5. WCHISPStudio 识别到设备后,选择 `.hex` 点击下载。
+2. 准备固件 `.hex`:从本仓库的 **GitHub Releases** 下载,或直接使用仓库内的构建产物
+   `Firmware/Project/obj/Desktop_PD_Power_Converter.hex`,也可自行用 MounRiver
+   Studio II 构建 `Firmware/` 工程生成;
+3. 用 USB 线把设备的 USB-C PD 输入口连接到电脑;
+4. 让设备进入 ISP:
+   - **全新/未烧录**的设备:上电即自动进入出厂 ISP,无需操作;
+   - **已烧录固件**的设备:进 **菜单 → 系统设置**,把光标移到最末一项
+     **「重启至ISP模式」** 按 `ENTER`(菜单路径见上图;语言切到英文时该项显示为
+     `Reboot to ISP`);
+5. WCHISPStudio 识别到设备后,选择 `.hex` 点击下载;完成后设备自动复位进入主界面。
+
+> **不慎进入 ISP 模式的恢复方法**:ISP 模式下不显示主界面,只能被电脑端工具识别。
+> 只要**拔掉所有接口让整机彻底断电**——DC(XT30)输入、USB 输入与全部输出线、
+> 以及串口/调试线(`GND` / `DIO` / `DCK`)——**再重新上电**,设备就会正常启动回主界面。
+> 线缆没拔净(PD 输入和调试线会倒灌供电)就不算断电。
 
 ### 方法 2:WCH-LinkE 调试下载(需要打开后盖)
 
-1. 准备 **WCH-LinkE** 调试器;
-2. 打开设备后盖,将调试器的 **GND、DIO、DCK** 三根线接到板上调试口;
+![自制 WCH-LinkE 连接调试口](../Images/Assembly/16-自制WCHLinkE连接主板.jpg)
+
+1. 准备 **WCH-LinkE** 调试器(市售或自制均可);
+2. 打开设备后盖,将调试器的 **GND、DIO、DCK** 三根线接到板上 5PIN 调试口
+   (丝印为 `GND` / `TXD` / `RXD` / `DIO` / `DCK`,按全长丝印认脚位,见上图);
+   若还要看串口日志,可再把这口的 `TXD`/`RXD` 接到 USB-串口模块;
 3. 在 **MounRiver Studio II**(打开 `Firmware/Desktop_PD_Power_Converter.wvproj`)
    或 **WCH-LinkUtility** 中选择 CH32X035 并下载固件。
 

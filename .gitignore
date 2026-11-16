@@ -30,3 +30,8 @@ Thumbs.db
 
 # Internal PD debugging notes: kept in the working tree, never published.
 Firmware/Peripheral/PD/pd_snk_debug.md
+
+# 例外：把构建出来的 ISP 固件（hex）纳入版本库，装配指南可直接给出下载链接。
+# 必须放在上面的 /Firmware/Project/obj/* 与 *.hex 规则之后才生效。
+!/Firmware/Project/obj/Desktop_PD_Power_Converter.hex
+

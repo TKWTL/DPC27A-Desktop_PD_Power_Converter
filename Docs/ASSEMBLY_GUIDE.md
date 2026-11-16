@@ -3,7 +3,8 @@
 > 面向复刻者:从物料准备到整机验收的完整流程。
 > 本文按**实拍装配顺序**编排,每一步给出对应的现场照片与检查点。
 > 电子设计文件见 [`../Hardware/`](../Hardware/README.md),固件见 [`../Firmware/`](../Firmware/README.md)。
-> 14 张实拍图与章节的对照索引见文末「附录:实拍图索引」。
+> 16 张装配实拍图与章节的对照索引见文末「附录:实拍图索引」;成品界面截图见
+> [`../Images/Product/`](../Images/Product/)。
 
 ## 1. 准备工作
 
@@ -398,6 +399,26 @@
 - [ ] 温度读数合理(非 `--.-C`;`Temp#1` = GX21M15U 板温,`Temp#2` = NTC);
 - [ ] 输入电压 / 功率预算显示与实际输入一致。
 
+**串口启动横幅对照**(SW3538 接入电压时的实测打印,921600 8N1):
+
+![上电启动横幅(COMTransmit,921600)](../Images/Testing/0-连接SW3538作为电压的上电打印输出.jpg)
+
+认这几行就能判断板子起没起来:
+
+| 打印行 | 含义 |
+|---|---|
+| `=== Desktop PD Power Converter / CH32X035C8T6 ===` | 固件版本横幅,出现即表示已正常启动 |
+| `[RESET] cause: SW` / `PIN` / `IWDG` | 复位来源;软复位为 `SW`,上电为 `PIN`,看门狗为 `IWDG` |
+| `SystemClk:48000000 Hz ChipID:...` | 主频与芯片 ID,时钟配置正确才会出现 |
+| `Fan PWM: PB9 TIM1_CH1 @ 187500 Hz` | 风扇 PWM 初始化成功 |
+| `Display SPI1: PA11 SCK / PA10 MOSI ...` | OLED SPI 初始化 |
+| `I2C1: PA13 SCL / PA14 SDA Soft-I2C; SW3526#1 PA4/PA5 ...` | 软 I²C 与两颗 SW3526 挂载 |
+| `PD Sink: SPR <= 20000 mV; EPR ...` | PD Sink 策略生效 |
+| `[PWR] budget 126 W -> ...` | 功率预算已按输入算出 |
+
+> 没看到横幅时:先确认串口线接在 `H1` 的 `TXD`/`RXD`(§14 方法 2)、波特率 921600、
+> 且板子是**已烧录**状态;全新芯片上电进 ISP 是没有这串打印的。
+
 ## 14. 固件烧录
 
 两种方式,均为 WCH 官方工具:
@@ -408,18 +429,75 @@
 
 **方法 1:USB 直接下载(推荐,免拆机)**
 
-1. 电脑安装 **WCHISPStudio**;
-2. 从仓库 GitHub Releases 下载固件 `.hex`(或在 MounRiver 里自行构建);
-3. USB 线连接 `USB4`(PD 输入口)到电脑;
-4. 让设备进入 ISP:新芯片上电即自动进入;已烧录固件则在菜单选 **`Reboot to ISP`**;
-5. WCHISPStudio 识别后下载 `.hex`。
+![WCHISPStudio 下载界面](../Images/Assembly/15-WCH_ISP下载.jpg)
+
+1. 电脑安装 **WCHISPStudio**(图 15 为 V4.00);
+2. 准备固件 `.hex`,二选一:
+   - **直接用仓库里的构建产物**:
+     [`Firmware/Project/obj/Desktop_PD_Power_Converter.hex`](../Firmware/Project/obj/Desktop_PD_Power_Converter.hex)
+     (已在版本库内,点开即可下载);
+   - 或从仓库 **GitHub Releases** 下载;也可以自己用 MounRiver 构建生成;
+3. 用 USB 线把设备的 **`USB4`(PD 输入口)** 接到电脑;
+4. 让设备进入 ISP:
+   - **新芯片 / 未烧录**:上电即自动进入出厂 ISP,无需操作;
+   - **已烧录固件**:在设备上操作 **菜单 → 系统设置**,把光标移到最末一项
+     **「重启至ISP模式」**,按 `ENTER` 确认(界面见下方图);
+     - 固件默认中文界面,所以菜单项是中文;**若已把 Language 关掉切成英文**,
+       该项显示为 **`Reboot to ISP`**;
+     - 进菜单与选项目的操作见 [`USER_MANUAL.md`](USER_MANUAL.md) §5.2 / §6;
+5. 在 WCHISPStudio 里设置(与图 15 一致):
+   - 芯片系列 `CH32X03x`,芯片型号 `CH32X035C8T6`;
+   - 下载接口选 **`USB`**,点「搜索」让它识别到设备;
+   - 「下载文件」里选择第 2 步的 `.hex`(目标程序文件 1);
+6. 点 **「下载」**;进程栏出现 `下载中 → 校验中 → 成功`,并给出本次用时
+   (图 15 为 `成功,本次用时1.40s`),右侧「下载记录」会逐行打印设备序列号与结果;
+7. **下载成功后的现象**:设备自动复位运行,OLED 进入**主界面**(仪表盘)。
+   此刻设备由电脑 USB 的 5 V 供电,因此:
+   - 第 1 行输入电压应显示 **`5V`**,功率预算 `0Wmax`,`PD` 状态显示 **`UVP`**
+     (5 V 低于 8 V 欠压门限,属正常,不代表故障);
+   - 三列 `TypeA+C` / `TypeC1` / `TypeC2` 的电压电流应接近 0,协议列显示 `NC`。
+   参考画面见 [`../Images/Product/主界面-5V输入.jpg`](../Images/Product/主界面-5V输入.jpg)。
+
+> 若下载后屏幕全黑:先确认 `C78`/`C88` 已补焊(§11)、`3V3` 与 `VPP` 阻抗正常(§12);
+> 若 WCHISPStudio 搜不到设备:检查 USB 线是否只供电不能传数据,以及设备是否真的进入了 ISP。
+
+**进入 ISP 的菜单路径**(默认中文界面):
+
+![系统设置界面:最后一项为「重启至ISP模式」](../Images/Product/系统设置界面.jpg)
+
+菜单 → **系统设置**,最末一项就是 **「重启至ISP模式」**;上面的「风扇 +10'C」、
+「使用温度#1/#2」、「中文界面」都是普通开关项,「系统重启」只做软复位、**不进 ISP**。
+
+> ⚠️ **不慎进入 ISP 模式的恢复方法**:ISP 模式下屏幕不显示主界面,只能被电脑端工具识别。
+> 只要**拔掉所有接口让整机彻底断电**——XT30 输入、USB 输入与全部输出线、以及串口/调试线
+> (`GND` / `DIO` / `DCK`)——**再重新上电**,设备就会正常启动回到主界面。
+> 注意线缆没拔净时(尤其 PD 输入与调试线会倒灌供电)不算断电,断电要断干净。
 
 **方法 2:WCH-LinkE 调试下载**
 
-1. 准备 **WCH-LinkE**;
-2. 打开后盖,连接板上的调试焊盘 **`GND` / `DIO` / `DCK`**(图 14 中可见);
-3. 在 **MounRiver Studio II**(工程 `Firmware/Desktop_PD_Power_Converter.wvproj`)
-   或 **WCH-LinkUtility** 中下载。
+![自制 WCH-LinkE 通过杜邦线接主板调试口](../Images/Assembly/16-自制WCHLinkE连接主板.jpg)
+
+1. 准备 **WCH-LinkE**:市售的可以,也可以像图 16 那样**用一块自制的 WCH-LinkE 小板**
+   (板上印 `WCH-LinkE` / 版本号,一侧是 USB 口,另一侧是 SWD/串口引脚);
+2. 打开后盖,找到主板调试口 `H1`(5 pin,丝印为完整的 **`GND` / `TXD` / `RXD` / `DIO` / `DCK`**;
+   图 16 里被杜邦线挡住,只露出前半截,按全长丝印认脚位);
+3. 按下表接线(杜邦线直接插到 `H1` 的排针上,图 16):
+
+   | `H1` 脚位 | 丝印 | 接到 WCH-LinkE |
+   |---|---|---|
+   | 1 | `GND` | **GND**(必接) |
+   | 2 | `TXD` | 可选:接 USB-串口模块的 RX,用来看串口日志 |
+   | 3 | `RXD` | 可选:接 USB-串口模块的 TX |
+   | 4 | `DIO` | **SWDIO / DIO**(必接) |
+   | 5 | `DCK` | **SWCLK / DCK**(必接) |
+
+   > 只下载固件时接 **`GND` + `DIO` + `DCK`** 三根就够;把 `TXD`/`RXD` 也接上,
+   > 就能同时用串口(921600)看启动横幅与 `[RESET] cause`。
+4. **不要接 3V3/5V 供电**:下载时由设备自己供电即可,别把调试器的电源引到板上;
+5. 在 **MounRiver Studio II**(工程 `Firmware/Desktop_PD_Power_Converter.wvproj`)
+   或 **WCH-LinkUtility** 中选择 `CH32X035`,点下载;
+6. 接线注意:杜邦线别插错脚位(`DIO`/`DCK` 反了会连不上芯片),插针式排线**不要带着线缆
+   拽板子**,避免把 `H1` 的焊盘扯起(§5 已要求针头不超板边)。
 
 > 用户侧说明见 [`USER_MANUAL.md`](USER_MANUAL.md) §11 固件升级。
 
@@ -462,6 +540,12 @@
       螺钉**对角均匀拧紧**,不要一次拧死单颗;
 - [ ] 检查按键手感与键程、屏窗无遮挡、USB 口与面板开孔齐平;
 - [ ] 记录:整机序列号 / 日期 / 固件版本(建议写入机内标签)。
+
+> **主界面对照**(成品实机截图,`Images/Product/`):
+> [5 V 输入](../Images/Product/主界面-5V输入.jpg)(UVP,同 §14 烧录后现象)、
+> [21 V 6.35 A 输入](../Images/Product/主界面-21V-6.35A输入.jpg)、
+> [28 V 5 A 输入](../Images/Product/主界面-28V-5A输入.jpg);菜单与设置页见
+> [主菜单](../Images/Product/主菜单.jpg)、[系统设置界面](../Images/Product/系统设置界面.jpg)。
 
 > 单机验收的测量项目(纹波、半桥波形、满载温升)与记录模板见
 > [`TEST_REPORT.md`](TEST_REPORT.md)。
@@ -516,6 +600,8 @@
 | 12 | [12-焊接屏幕.jpg](../Images/Assembly/12-焊接屏幕.jpg) | OLED 13 pin FPC 直接焊到内面板焊盘 | §9 |
 | 13 | [13-锡桥连接.jpg](../Images/Assembly/13-锡桥连接.jpg) | 内面板 ↔ 主板 板边焊盘锡桥连接 | §11 |
 | 14 | [14-背面总览.jpg](../Images/Assembly/14-背面总览.jpg) | 最终总览:**`C78`/`C88` 补焊后**、Type-C 铁壳补强完成后 | §16 |
+| 15 | [15-WCH_ISP下载.jpg](../Images/Assembly/15-WCH_ISP下载.jpg) | WCHISPStudio 下载固件:芯片型号、USB 接口、hex 路径与「成功」记录 | §14 |
+| 16 | [16-自制WCHLinkE连接主板.jpg](../Images/Assembly/16-自制WCHLinkE连接主板.jpg) | 自制 WCH-LinkE 用杜邦线接主板 5PIN 调试口(`GND/TXD/RXD/DIO/DCK`) | §14 |
 
 > 图片体积较大(单张 0.3–1.1 MB),若需压缩到仓库约定(≤500 KB)见
 > [`../Images/README.md`](../Images/README.md)。
