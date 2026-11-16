@@ -74,7 +74,7 @@
     { " Language", " 中文界面" },
 
 /* About / burn-in / game / widget */
-    { "  Desktop PD Power\ngithub.com/TKWTL/DPC27A-Desktop_PD_Power_Converter\n MiaoUI u8g2 coroOS\nMIT BSD2 BSD3 AGPL", "  桌面PD电源\ngithub.com/TKWTL/DPC27A-Desktop_PD_Power_Converter\n MiaoUI u8g2 coroOS\nMIT BSD2 BSD3 AGPL" },
+    { "  Desktop PD Power\nSource: https://github.com/TKWTL/Desktop_PD_Power_Converter\n MiaoUI u8g2 coroOS\nMIT BSD-2 BSD-3 AGPL", "  桌面PD电源\n源码: https://github.com/TKWTL/Desktop_PD_Power_Converter\n MiaoUI u8g2 coroOS\nMIT BSD-2 BSD-3 AGPL" },
     { "Burn-in Test", "老化测试" },
     { "Checks the OLED for", "检查OLED" },
     { "decay after many", "长时间点亮后" },

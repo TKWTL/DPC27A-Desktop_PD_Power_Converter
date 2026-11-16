@@ -822,7 +822,7 @@ static void Draw_TextPage(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item, ui_ite
                 const ui_data_t *data = temp_item->element->data;
                 char Data[16] = {0};
                 uint16_t y = (uint16_t)UI_FXI(temp_item->animationY);
-                Disp_SetFont(UI_FONT); /* shared proportional font for ASCII data */
+                Disp_SetFont(UI_FONT); /* fixed-width ASCII data, unchanged */
                 Disp_SetClipWindow(UI_DATA_X0, UI_DATA_Y0, UI_DATA_X1, UI_DATA_Y1);
 
                 switch (data->dataType)
@@ -839,12 +839,12 @@ static void Draw_TextPage(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item, ui_ite
                     else
                         UI_FmtScaled(Data, sizeof(Data), *(const int *)data->ptr, decimals);
 
-                    width = Disp_GetUTF8Width(text);
+                    width = (unsigned)strlen(text) * UI_FONT_WIDTH;
                     /* Refuse to show a clipped/misleading numeric value. */
                     if(width == 0u || width > (UI_DATA_X1 - UI_DATA_X0))
                     {
                         text = "OVF";
-                        width = Disp_GetUTF8Width(text);
+                        width = 3u * UI_FONT_WIDTH;
                     }
                     Disp_DrawStr((uint16_t)(UI_DATA_X1 - width), y, text);
                     break;
@@ -917,7 +917,7 @@ static void Draw_TextPage(ui_t *ui, ui_page_t *Page, ui_item_t *now_Item, ui_ite
 
     /* 高光框：保留动画，但动画目标改成“选中项实际动画基线Y + 固定补偿” */
     cursor_target_row = (int16_t)(UI_FXI(selected_anim_y) - UI_FONT_HIGHT + UI_TEXT_CURSOR_Y_OFFSET
-                                  - 2);
+                                  - 1 - (DPC_I18n_IsChinese() ? 1 : 0));
 
     Disp_SetClipWindow(UI_TITLE_X0, UI_TITLE_Y0, UI_TITLE_X1, UI_TITLE_Y1);
     color = 2;
@@ -967,7 +967,8 @@ static void Draw_ImagePage(ui_t *ui, ui_page_t *Page, ui_item_t *nowItem, ui_ite
         temp_item = temp_item->nextItem;
     }
 
-    /* The status line and localized title share the same font. */
+    /* Dashboard_DrawStatusLine forced the original ASCII font; the
+     * localized bottom title explicitly chooses its own font again. */
     const char *label = DPC_I18n_Text(next_item->itemName);
 #if ( UI_TITLE_ROLL == 1 )
     int16_t width = (int16_t)DPC_I18n_TextWidth(label);

@@ -16,10 +16,10 @@ in individual source files when redistributing modified versions.
 
 The MiaoUI core, widgets and display abstraction used by this firmware were
 ported from the user-supplied `Firmware_0.zip`. MiaoUI source files retain their
-MIT notices. The original bundled ASCII font has been removed.
+MIT notices. The original separately linked ASCII font has been removed; its original MIT-licensed glyph bitmaps are now embedded inside the shared Unicode font.
 
-The shared `font_fusion_pixel_p12_zhcn` subset contains Fusion Pixel and Ark
-Pixel glyphs; both font licenses (SIL OFL 1.1) are retained in
+The shared `font_fusion_pixel_p12_zhcn` subset contains the original MiaoUI
+ASCII glyph bitmaps plus Fusion Pixel and Ark Pixel Han glyphs; both font licenses (SIL OFL 1.1) are retained in
 `Firmware/APP/MiaoUI/fonts/`. See `Firmware/APP/I18N.md` for provenance.
 
 The three 30x30 XBM menu image arrays retained from that package carry their

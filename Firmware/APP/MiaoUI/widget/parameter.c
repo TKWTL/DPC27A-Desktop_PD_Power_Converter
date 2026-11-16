@@ -73,14 +73,13 @@ void ParameterSetting_Widget(ui_t *ui)
         else
             strcpy(num, "--");
 
-        /* Measure numbers in the shared proportional font. Clip the translated label
+        /* Keep numbers in the original ASCII font. Clip the translated label
          * before the right-aligned value; never split a UTF-8 string. */
         Disp_SetDrawColor(&ui->bgColor);
         Disp_DrawBox(x + 3, y + 1, w - 6, 14);
         color = ui->bgColor ? 0 : 1;
         Disp_SetDrawColor(&color);
-        Disp_SetFont(UI_FONT);
-        uint16_t num_x = (uint16_t)(x + w - 4 - Disp_GetUTF8Width(num));
+        uint16_t num_x = (uint16_t)(x + w - 4 - strlen(num) * UI_FONT_WIDTH);
         Disp_SetClipWindow(x + 3, y + 1, num_x > x + 5 ? num_x - 2u : x + 3, y + 15);
         DPC_I18n_DrawText(x + 4, y + 13, label);
         Disp_SetMaxClipWindow();

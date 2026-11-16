@@ -276,3 +276,5 @@ SPR PPS 非标源首次合同生效后偶发/重复 st=9 超时，暂只改 PD_M
 - [`Peripheral/SPI/README.md`](Peripheral/SPI/README.md) — 显示 SPI + DMA 完成中断 + 硬件 NSS
 - [`Peripheral/USART/README.md`](Peripheral/USART/README.md) — 异步串口
 - [`ThirdParty/u8g2/README.md`](ThirdParty/u8g2/README.md) — 精简 u8g2
+
+- 2026-11-16 字库调整：保持唯一 `font_fusion_pixel_p12_zhcn` 符号与100个中文字形，ASCII使用原MiaoUI h12w6点阵重编码（固定6px步进），恢复原Dashboard、数值栏和About等宽布局；目标编译、板测及MAP仍待验证。

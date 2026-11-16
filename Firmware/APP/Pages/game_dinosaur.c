@@ -631,7 +631,7 @@ void Game_DinoSaur(ui_t *ui)
 
     /* Life icons and numeric scores preserve their ASCII content. The zh
      * score label needs a slightly lower baseline and measured alignment. */
-    uint16_t score_y = 11u;
+    uint16_t score_y = DPC_I18n_IsChinese() ? 11u : 9u;
     if(s_life >= 3u)
         Disp_DrawStr(1u, score_y, "***");
     else if(s_life == 2u)
@@ -651,11 +651,11 @@ void Game_DinoSaur(ui_t *ui)
             /* Prefer readable counters to overlap with the life icons. */
             snprintf(buf, sizeof buf, "HI %05d %05d", (int)s_high_score, (int)(score_px >> 1));
             Disp_SetFont(UI_FONT);
-            Disp_DrawStr(UI_HOR_RES - 2u - Disp_GetUTF8Width(buf), score_y, buf);
+            Disp_DrawStr(44u, score_y, buf);
         }
     }
     else
-        Disp_DrawStr(UI_HOR_RES - 2u - Disp_GetUTF8Width(buf), score_y, buf);
+        Disp_DrawStr(44u, score_y, buf);
 
     dino_frame = (uint8_t)((dist_px / DINO_RUN_FRAME_PX) % 2u);
     if(coll != 0u)
@@ -669,10 +669,21 @@ void Game_DinoSaur(ui_t *ui)
 
     if(s_state == DINO_FAILED)
     {
-        dino_center_label(24u, "Game Over!!");
-        dino_center_label(37u, "Dino Game V0.1");
-        dino_center_label(50u, "from hjl240");
-        dino_center_label(63u, "Jump to Restart");
+        if(DPC_I18n_IsChinese())
+        {
+            dino_center_label(24u, "Game Over!!");
+            dino_center_label(37u, "Dino Game V0.1");
+            dino_center_label(50u, "from hjl240");
+            dino_center_label(63u, "Jump to Restart");
+        }
+        else
+        {
+            Disp_SetFont(UI_FONT);
+            Disp_DrawStr(34u, 21u, "Game Over!!");
+            Disp_DrawStr(22u, 31u, "Dino Game V0.1");
+            Disp_DrawStr(34u, 41u, "from hjl240");
+            Disp_DrawStr(34u, 52u, "Jump to Restart");
+        }
     }
 
     Disp_SendBuffer();

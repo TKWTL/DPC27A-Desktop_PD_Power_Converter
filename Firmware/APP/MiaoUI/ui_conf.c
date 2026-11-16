@@ -113,9 +113,11 @@ void Create_Text(ui_t *ui)
 
     (void)ui;
 
-    /* About: proportional pixel-width wrapping, six lines at 12px each.
-     * Keep the repository path and compact license labels within 120px. */
-    about_text.ptr = "  Desktop PD Power\ngithub.com/TKWTL/DPC27A-Desktop_PD_Power_Converter\n MiaoUI u8g2 coroOS\nMIT BSD2 BSD3 AGPL";
+    /* About page body.  Text_Widget() renders 20 chars per line (UI_HOR_RES /
+     * UI_FONT_WIDTH - 1) with a 12 px line step, so keep every line <= 20
+     * characters and the whole block within ~6 visible lines.  A full line is
+     * 20 x 6 px + 4 px inset = 124 px, inside the 128 px panel width. */
+    about_text.ptr = "  Desktop PD Power\nSource: https://github.com/TKWTL/Desktop_PD_Power_Converter\n MiaoUI u8g2 coroOS\nMIT BSD-2 BSD-3 AGPL";
     about_text.font = UI_FONT;
     about_text.fontHight = UI_FONT_HIGHT;
     about_text.fontWidth = UI_FONT_WIDTH;
